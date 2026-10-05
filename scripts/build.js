@@ -1,0 +1,82 @@
+// 정적 사이트 빌드 (GitHub Pages용): dist/ 에 페이지 + 지역별 데이터 JSON 생성
+// 사용: npm run build  (BUILD_MONTHS=60 기본, MOLIT_API_KEY 없으면 데모 데이터)
+require('../lib/env');
+const fs = require('fs');
+const path = require('path');
+const { getMonth, monthRange, mode, pool } = require('../lib/data');
+const an = require('../lib/analyze');
+const { pack } = require('../lib/pack');
+const regions = require('../data/regions.json');
+
+const ROOT = path.join(__dirname, '..');
+const DIST = path.join(ROOT, 'dist');
+const MONTHS = Number(process.env.BUILD_MONTHS) || 60;
+const OVERVIEW_MONTHS = 25;
+// 이 비율 이상 실패하면 배포를 중단해 이전 사이트를 유지
+const MAX_FAIL_RATIO = 0.05;
+
+function write(rel, data) {
+  const file = path.join(DIST, rel);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, typeof data === 'string' ? data : JSON.stringify(data));
+  return fs.statSync(file).size;
+}
+
+(async () => {
+  const yms = monthRange(MONTHS);
+  console.log(`빌드: ${mode() === 'live' ? '국토부 API' : '데모 데이터'}, ${yms[0]}~${yms[yms.length - 1]} (${MONTHS}개월), ${regions.length}개 지역`);
+  fs.rmSync(DIST, { recursive: true, force: true });
+
+  const failures = [];
+  let total = 0, bytes = 0;
+  // 한 달 실패로 지역 전체를 버리지 않도록 월 단위로 받는다 (API 호출은 molit.js에서 직렬화됨)
+  const fetchAll = async (kind, code) => {
+    const chunks = await pool(yms, 6, async (ym) => {
+      total++;
+      try {
+        return await getMonth(kind, code, ym);
+      } catch (e) {
+        failures.push({ code, kind, ym, error: e.message });
+        return [];
+      }
+    });
+    return chunks.flat();
+  };
+
+  let done = 0;
+  await pool(regions, 2, async (r) => {
+    const [trades, rents] = [await fetchAll('trade', r.code), await fetchAll('rent', r.code)];
+    bytes += write(`data/region/${r.code}.json`, pack(yms, trades, rents));
+    const ovYms = yms.slice(-OVERVIEW_MONTHS);
+    const { series, indicators } = an.regionSummary(ovYms, trades.filter((t) => t.date.replace(/-/g, '').slice(0, 6) >= ovYms[0]), []);
+    write(`data/overview/${r.code}.json`, { code: r.code, series: series.map(({ ym, ma, count }) => ({ ym, ma, count })), indicators });
+    console.log(`[${++done}/${regions.length}] ${r.name}: 매매 ${trades.length.toLocaleString()} · 전월세 ${rents.length.toLocaleString()}`);
+  });
+
+  write('data/meta.json', {
+    mode: 'static',
+    source: mode(),
+    builtAt: new Date().toISOString(),
+    months: MONTHS,
+    yms,
+    regions: regions.map(({ demoBase, ...r }) => r),
+    missing: failures.map(({ code, kind, ym }) => `${code}/${kind}/${ym}`),
+  });
+
+  // 페이지: public/ 복사 + 분석 모듈 + 정적 모드 표시
+  for (const f of fs.readdirSync(path.join(ROOT, 'public'))) {
+    fs.copyFileSync(path.join(ROOT, 'public', f), path.join(DIST, f));
+  }
+  fs.copyFileSync(path.join(ROOT, 'lib', 'analyze.js'), path.join(DIST, 'analyze.js'));
+  const html = fs.readFileSync(path.join(DIST, 'index.html'), 'utf8')
+    .replace('<script src="analyze.js"></script>', '<script>window.HT_STATIC = true;</script>\n  <script src="analyze.js"></script>');
+  write('index.html', html);
+  write('.nojekyll', '');
+
+  console.log(`데이터 ${(bytes / 1024 / 1024).toFixed(1)}MB, 실패 ${failures.length}/${total}건`);
+  failures.slice(0, 20).forEach((f) => console.warn(`  [실패] ${f.code} ${f.kind} ${f.ym}: ${f.error}`));
+  if (failures.length > total * MAX_FAIL_RATIO) {
+    console.error(`실패가 ${(MAX_FAIL_RATIO * 100).toFixed(0)}%를 넘어 빌드를 중단합니다 (이전 배포 유지).`);
+    process.exit(1);
+  }
+})();

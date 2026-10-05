@@ -1,0 +1,76 @@
+# 매일 국토부 실거래 데이터를 받아 정적 사이트를 빌드하고 GitHub Pages에 배포
+name: Build & Deploy
+
+on:
+  schedule:
+    - cron: '0 19 * * *' # 매일 04:00 KST
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    # 첫 실행은 5년치 전체를 받느라 1~2시간 걸릴 수 있음. 이후엔 최근 2개월만 갱신
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: API 키 확인
+        env:
+          MOLIT_API_KEY: ${{ secrets.MOLIT_API_KEY }}
+        run: |
+          if [ -z "$MOLIT_API_KEY" ]; then
+            echo "::error::저장소 Secrets에 MOLIT_API_KEY가 없습니다 (Settings → Secrets and variables → Actions)"
+            exit 1
+          fi
+
+      # 지난 실행에서 받은 실거래 데이터 재사용 (지난 달들은 바뀌지 않음)
+      - name: 데이터 캐시 복원
+        uses: actions/cache/restore@v4
+        with:
+          path: data/cache
+          key: molit-${{ github.run_id }}
+          restore-keys: molit-
+
+      - name: 빌드
+        env:
+          MOLIT_API_KEY: ${{ secrets.MOLIT_API_KEY }}
+          BUILD_MONTHS: 60
+        run: node scripts/build.js
+
+      # 빌드가 실패해도(일일 호출 한도 등) 받은 만큼은 저장 → 다음 실행에서 이어 받음
+      - name: 데이터 캐시 저장
+        if: always()
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: data/cache
+          key: molit-${{ github.run_id }}
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

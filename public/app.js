@@ -1,6 +1,9 @@
 /* homeTrend 프론트엔드 — 해시 라우팅 + Chart.js */
 const app = document.getElementById('app');
-const state = { meta: null, overview: {}, charts: [], sort: { overview: ['chg3m', -1], apts: ['count12m', -1] } };
+const state = { meta: null, overview: {}, raw: {}, charts: [], sort: { overview: ['chg3m', -1], apts: ['count12m', -1] } };
+// 정적 사이트(GitHub Pages): 빌드된 data/*.json을 읽는다. 로컬 서버: /api/* 를 호출한다
+const STATIC = !!window.HT_STATIC;
+const A = window.Analyze;
 
 // ---------- 유틸 ----------
 const api = async (p) => {
@@ -9,6 +12,57 @@ const api = async (p) => {
   if (!r.ok) throw new Error(j.error || r.statusText);
   return j;
 };
+
+// ---------- 데이터 ----------
+const getMeta = () => api(STATIC ? 'data/meta.json' : '/api/meta');
+const getOverview = (code) => api(STATIC ? `data/overview/${code}.json` : `/api/overview/${code}`);
+
+const dateStr = (n) => { const s = String(n); return `${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}`; };
+function unpack(p, months) {
+  const yms = p.yms.slice(-months);
+  const from = Number(yms[0] + '01');
+  const apts = p.apts;
+  const trades = p.t.filter((r) => r[1] >= from).map(([i, d, a, floor, price, direct]) => ({
+    dong: apts[i][0], apt: apts[i][1], built: apts[i][2], jibun: apts[i][3],
+    date: dateStr(d), area: a / 100, floor, price, kind: direct ? '직거래' : '중개거래',
+  }));
+  const rents = p.j.filter((r) => r[1] >= from).map(([i, d, a, floor, deposit]) => ({
+    dong: apts[i][0], apt: apts[i][1], built: apts[i][2],
+    date: dateStr(d), area: a / 100, floor, deposit, monthly: 0,
+  }));
+  return { yms, trades, rents };
+}
+// 지역 원본은 한 번 받아 메모리에 두고, 지역·단지 화면 모두 여기서 계산
+async function getRaw(code, months) {
+  const k = `${code}:${months}`;
+  if (!state.raw[k]) {
+    state.raw[k] = (STATIC
+      ? (state.raw[code] ||= api(`data/region/${code}.json`)).then((p) => unpack(p, months))
+      : api(`/api/raw/${code}?months=${months}`).then((p) => unpack(p, months))
+    ).catch((e) => { delete state.raw[k]; delete state.raw[code]; throw e; });
+  }
+  return state.raw[k];
+}
+async function getRegion(code, months) {
+  const { yms, trades, rents } = await getRaw(code, months);
+  return { ...A.regionSummary(yms, trades, rents), apartments: A.apartmentList(trades) };
+}
+async function getApt(code, key, months) {
+  const { yms, trades, rents } = await getRaw(code, months);
+  const t = trades.filter((x) => A.aptKey(x) === key).sort((a, b) => a.date.localeCompare(b.date));
+  if (!t.length) throw new Error('해당 기간에 거래가 없는 단지입니다');
+  const r = rents.filter((x) => A.aptKey(x) === key).sort((a, b) => a.date.localeCompare(b.date));
+  const last = t[t.length - 1];
+  return {
+    apt: { key, name: last.apt, dong: last.dong, jibun: last.jibun, built: last.built },
+    ...A.apartmentDetail(yms, t, r),
+    trades: t,
+    rents: r,
+  };
+}
+// 정적 사이트는 빌드한 기간까지만 선택 가능
+const monthOpts = (opts) => (STATIC ? opts.filter(([m]) => m <= state.meta.months) : opts);
+
 const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const PYEONG = 3.305785;
@@ -87,10 +141,15 @@ async function route() {
   if (!state.keepView) destroyCharts(); // 기간 변경 중엔 기존 차트를 남겨두고, 새로 그릴 때 정리
   chartDefaults();
   if (!state.meta) {
-    state.meta = await api('/api/meta');
+    state.meta = await getMeta();
+    const live = (state.meta.source || state.meta.mode) === 'live';
     const b = document.getElementById('mode');
-    b.textContent = state.meta.mode === 'live' ? '국토부 실거래 데이터' : '데모 데이터 (실제 시세 아님)';
-    b.className = 'badge' + (state.meta.mode === 'live' ? '' : ' demo');
+    b.textContent = live ? '국토부 실거래 데이터' : '데모 데이터 (실제 시세 아님)';
+    if (STATIC && state.meta.builtAt) {
+      const t = new Date(state.meta.builtAt);
+      b.textContent += ` · ${t.getMonth() + 1}/${t.getDate()} 갱신`;
+    }
+    b.className = 'badge' + (live ? '' : ' demo');
   }
   const parts = location.hash.replace(/^#\/?/, '').split('/').map(decodeURIComponent);
   const view = parts[0];
@@ -191,7 +250,7 @@ async function viewOverview(group, id) {
     while (i < todo.length) {
       const r = todo[i++];
       try {
-        const d = await api(`/api/overview/${r.code}`);
+        const d = await getOverview(r.code);
         state.overview[r.code] = { ind: d.indicators, series: d.series };
       } catch (e) {
         state.overview[r.code] = { error: e.message };
@@ -284,15 +343,16 @@ const APT_MONTHS = [[36, '3년'], [60, '5년'], [120, '10년'], [192, '16년']];
 
 async function viewRegion(code, id) {
   const region = requireRegion(code);
-  const months = getMonths(`region.${code}`, REGION_MONTHS, 36);
+  const opts = monthOpts(REGION_MONTHS);
+  const months = getMonths(`region.${code}`, opts, 36);
   showLoading(`<div class="crumb"><a href="#/g/${esc(region.group)}">${esc(region.group)}</a> ›</div><h1>${esc(region.name)}</h1><p class="muted">실거래 ${months}개월치 불러오는 중… (처음 보는 기간은 국토부 API 호출로 30초 정도 걸릴 수 있어요)</p>`);
-  const d = await api(`/api/region/${code}?months=${months}`);
+  const d = await getRegion(code, months);
   if (isStale(id)) return;
   destroyCharts();
   const ind = d.indicators;
   app.innerHTML = `
     <div class="crumb"><a href="#/g/${esc(region.group)}">${esc(region.group)}</a> ›</div>
-    <div class="row"><h1>${esc(region.name)}</h1>${phaseChip(ind.phase)}<span class="spacer"></span>${monthsSeg(months, REGION_MONTHS)}</div>
+    <div class="row"><h1>${esc(region.name)}</h1>${phaseChip(ind.phase)}<span class="spacer"></span>${monthsSeg(months, opts)}</div>
     <p class="sub">평당가 = 전용면적 기준 거래가 ÷ 평 (중위값). 최근 지표는 3개월 이동평균 기준.</p>
     <div class="kpis">
       <div class="kpi"><div class="label">평당 매매가</div><div class="value num">${fmtMan(ind.current)}</div><div class="hint">84㎡ 환산 ${ind.current ? fmtEok(Math.round(ind.current * 84 / PYEONG / 100) * 100) : '–'}</div></div>
@@ -373,9 +433,10 @@ async function viewRegion(code, id) {
 // ---------- 단지 상세 ----------
 async function viewApt(code, key, id) {
   const region = requireRegion(code);
-  const months = getMonths(`apt.${code}.${key}`, APT_MONTHS, 36);
+  const opts = monthOpts(APT_MONTHS);
+  const months = getMonths(`apt.${code}.${key}`, opts, 36);
   showLoading(`<div class="crumb"><a href="#/r/${code}">${esc(region.name)}</a> ›</div><p class="muted">불러오는 중… (처음 보는 기간은 30초 정도 걸릴 수 있어요)</p>`);
-  const d = await api(`/api/apt/${code}/${encodeURIComponent(key)}?months=${months}`);
+  const d = await getApt(code, key, months);
   if (isStale(id)) return;
   destroyCharts();
   const { apt } = d;
@@ -389,7 +450,7 @@ async function viewApt(code, key, id) {
       <h1>${esc(apt.name)}</h1>
       <button class="star ${watch.has(code, key) ? 'on' : ''}" id="star" title="관심단지" style="font-size:22px">★</button>
       <span class="muted">${esc(apt.dong)} ${esc(apt.jibun)} · ${apt.built || '–'}년 준공</span>
-      <span class="spacer"></span>${monthsSeg(months, APT_MONTHS)}
+      <span class="spacer"></span>${monthsSeg(months, opts)}
     </div>
     <p class="links">현재 매물·호가 확인 →
       <a href="https://m.land.naver.com/search/result/${q}" target="_blank" rel="noopener">네이버부동산</a>
@@ -483,7 +544,7 @@ async function viewWatch(id) {
   await Promise.all(list.map(async (w, i) => {
     const el = document.getElementById(`w${i}`);
     try {
-      const d = await api(`/api/apt/${w.code}/${encodeURIComponent(w.key)}?months=36`);
+      const d = await getApt(w.code, w.key, 36);
       const A = d.areas[0];
       const tr = d.trades.filter((t) => String(Math.round(t.area)) === A.area);
       const recent = median(tr.slice(-3).map((t) => t.price));

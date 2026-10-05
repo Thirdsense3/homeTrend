@@ -5,7 +5,10 @@
   "description": "서울·경기 아파트 실거래가 트렌드 대시보드",
   "scripts": {
     "start": "node server.js",
-    "prefetch": "node scripts/prefetch.js"
+    "prefetch": "node scripts/prefetch.js",
+    "build": "node scripts/build.js"
   },
-  "engines": { "node": ">=16" }
+  "engines": {
+    "node": ">=16"
+  }
 }

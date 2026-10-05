@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const { getRange, mode } = require('./lib/data');
 const an = require('./lib/analyze');
+const { pack } = require('./lib/pack');
 const regions = require('./data/regions.json');
 
 const PORT = Number(process.env.PORT) || 3000;
@@ -24,35 +25,12 @@ const routes = [
     return { code, series: series.map(({ ym, ma, count }) => ({ ym, ma, count })), indicators };
   }],
 
-  [/^\/api\/region\/(\d{5})$/, async ([code], q) => {
-    const region = regionOf(code);
-    if (!region) throw notFound();
+  // 지역 원본 데이터(압축). 지역·단지 화면의 계산은 브라우저(analyze.js)에서 한다
+  [/^\/api\/raw\/(\d{5})$/, async ([code], q) => {
+    if (!regionOf(code)) throw notFound();
     const months = clampMonths(q.get('months'), 36);
     const [t, r] = await Promise.all([getRange('trade', code, months), getRange('rent', code, months)]);
-    return {
-      region: { code, name: region.name, group: region.group },
-      ...an.regionSummary(t.yms, t.rows, r.rows),
-      apartments: an.apartmentList(t.rows),
-    };
-  }],
-
-  [/^\/api\/apt\/(\d{5})\/(.+)$/, async ([code, rawKey], q) => {
-    const region = regionOf(code);
-    if (!region) throw notFound();
-    const key = decodeURIComponent(rawKey);
-    const months = clampMonths(q.get('months'), 60);
-    const [t, r] = await Promise.all([getRange('trade', code, months), getRange('rent', code, months)]);
-    const trades = t.rows.filter((x) => an.aptKey(x) === key).sort((a, b) => a.date.localeCompare(b.date));
-    if (!trades.length) throw notFound('해당 기간에 거래가 없는 단지입니다');
-    const rents = r.rows.filter((x) => an.aptKey(x) === key).sort((a, b) => a.date.localeCompare(b.date));
-    const last = trades[trades.length - 1];
-    return {
-      region: { code, name: region.name },
-      apt: { key, name: last.apt, dong: last.dong, jibun: last.jibun, built: last.built },
-      ...an.apartmentDetail(t.yms, trades, rents),
-      trades: trades.map(({ date, area, floor, price, kind }) => ({ date, area, floor, price, kind })),
-      rents: rents.map(({ date, area, floor, deposit, monthly }) => ({ date, area, floor, deposit, monthly })),
-    };
+    return pack(t.yms, t.rows, r.rows);
   }],
 ];
 
@@ -63,8 +41,11 @@ function notFound(msg = 'not found') {
 }
 
 function serveStatic(res, pathname) {
-  const file = path.normalize(path.join(PUBLIC, pathname === '/' ? 'index.html' : pathname));
-  if (!file.startsWith(PUBLIC) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) {
+  // 분석 모듈은 서버와 브라우저가 같은 파일을 쓴다
+  const file = pathname === '/analyze.js'
+    ? path.join(__dirname, 'lib', 'analyze.js')
+    : path.normalize(path.join(PUBLIC, pathname === '/' ? 'index.html' : pathname));
+  if ((pathname !== '/analyze.js' && !file.startsWith(PUBLIC)) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) {
     res.writeHead(404).end('not found');
     return;
   }

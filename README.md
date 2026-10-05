@@ -12,6 +12,21 @@ npm start              # http://localhost:3000
 
 의존성 없음 (Node 16+).
 
+**사이트:** https://thirdsense3.github.io/homeTrend/ — 매일 04:00(KST) 자동 갱신
+
+## 배포 (GitHub Pages)
+
+`.github/workflows/deploy.yml`이 매일 새벽, 그리고 main에 push할 때마다
+국토부 데이터를 받아 `npm run build`로 정적 사이트(`dist/`)를 만들어 Pages에 배포한다.
+서버 없이 브라우저가 `data/region/{지역코드}.json`을 받아 직접 계산한다 (`lib/analyze.js` 공용).
+
+- 저장소 Secrets에 `MOLIT_API_KEY` 필요: `grep '^MOLIT_API_KEY=' .env | cut -d= -f2- | gh secret set MOLIT_API_KEY`
+- 받은 원본 데이터는 Actions 캐시에 보관 → 매일 최근 2개월만 다시 받음
+- 첫 실행은 5년치 전체라 1~2시간. 일일 호출 한도에 걸리면 다음 날 이어서 받고, 실패가 5% 넘으면 이전 사이트 유지
+- 정적 사이트의 기간 선택은 3년/5년 (10년 이상은 로컬 서버에서)
+
+로컬에서 정적 빌드만 확인: `BUILD_MONTHS=36 npm run build` → `dist/`
+
 ## 실데이터 API 키 발급 (무료)
 
 1. [공공데이터포털](https://www.data.go.kr) 로그인
