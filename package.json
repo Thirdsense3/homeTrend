@@ -1,0 +1,11 @@
+{
+  "name": "hometrend",
+  "version": "1.0.0",
+  "private": true,
+  "description": "서울·경기 아파트 실거래가 트렌드 대시보드",
+  "scripts": {
+    "start": "node server.js",
+    "prefetch": "node scripts/prefetch.js"
+  },
+  "engines": { "node": ">=16" }
+}
