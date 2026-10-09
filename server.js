@@ -2,7 +2,7 @@ require('./lib/env');
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
-const { getRange, monthRange, mode } = require('./lib/data');
+const { getRange, cachedRange, monthRange, mode } = require('./lib/data');
 const an = require('./lib/analyze');
 const { pack } = require('./lib/pack');
 const { getMacro } = require('./lib/ecos');
@@ -10,11 +10,12 @@ const regions = require('./data/regions.json');
 
 const PORT = Number(process.env.PORT) || 3000;
 const PUBLIC = path.join(__dirname, 'public');
-const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml' };
+const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png' };
 
 const clampMonths = (v, def) => Math.min(240, Math.max(13, Number(v) || def));
 const regionOf = (code) => regions.find((r) => r.code === code);
 let macroCache = null;
+let searchCache = null;
 
 const routes = [
   [/^\/api\/meta$/, async () => ({ mode: mode(), regions: regions.map(({ demoBase, ...r }) => r) })],
@@ -36,6 +37,16 @@ const routes = [
     const data = await getMacro(yms[0], yms[yms.length - 1]);
     if (!data) throw notFound('ECOS_API_KEY가 없어 금리·심리 지표를 볼 수 없습니다');
     macroCache = { at: Date.now(), data };
+    return data;
+  }],
+
+  // 전체 단지 검색 목록. 받아 둔 캐시만 읽으므로(API 호출 없음) 아직 안 본 지역은 빠질 수 있다. 1시간 메모리에 둔다
+  [/^\/api\/search$/, async () => {
+    if (searchCache && Date.now() - searchCache.at < 60 * 60 * 1000) return searchCache.data;
+    const out = {};
+    for (const r of regions) out[r.code] = an.searchEntries((await cachedRange('trade', r.code, 36)).rows);
+    const data = { v: 1, partial: mode() === 'live', regions: out };
+    searchCache = { at: Date.now(), data };
     return data;
   }],
 
