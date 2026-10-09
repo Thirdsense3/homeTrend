@@ -10,7 +10,7 @@ cp .env.example .env   # MOLIT_API_KEY 입력 (없으면 데모 데이터로 동
 npm start              # http://localhost:3000
 ```
 
-의존성 없음 (Node 16+).
+의존성 없음 (Node 16+). 테스트: `npm test` (Node 18+)
 
 **사이트:** https://thirdsense3.github.io/homeTrend/ — 매일 04:00(KST) 자동 갱신
 
@@ -21,7 +21,7 @@ npm start              # http://localhost:3000
 서버 없이 브라우저가 `data/region/{지역코드}.json`을 받아 직접 계산한다 (`lib/analyze.js` 공용).
 
 - 저장소 Secrets에 `MOLIT_API_KEY` 필요: `grep '^MOLIT_API_KEY=' .env | cut -d= -f2- | gh secret set MOLIT_API_KEY`
-- 받은 원본 데이터는 Actions 캐시에 보관 → 매일 최근 2개월만 다시 받음
+- 받은 원본 데이터는 Actions 캐시에 보관 → 매일 최근 2개월만 다시 받음 (1년 이내 매매는 해제 반영을 위해 1주일마다)
 - 첫 실행은 5년치 전체라 1~2시간. 일일 호출 한도에 걸리면 다음 날 이어서 받고, 실패가 5% 넘으면 이전 사이트 유지
 - 정적 사이트의 기간 선택은 3년/5년 (10년 이상은 로컬 서버에서)
 
@@ -35,7 +35,7 @@ npm start              # http://localhost:3000
    - 국토교통부_아파트 전월세 실거래가 자료 (`RTMSDataSvcAptRent`)
 3. 마이페이지의 **일반 인증키(Decoding)** 를 `.env`의 `MOLIT_API_KEY`에 입력
 
-호출은 (지역 × 월) 단위로 `data/cache/`에 저장되고, 최근 2개월만 12시간마다 갱신.
+호출은 (지역 × 월) 단위로 `data/cache/`에 저장되고, 최근 2개월은 12시간마다, 1년 이내 매매는 계약 해제 반영을 위해 1주일마다 갱신.
 개발계정 일일 호출 한도가 있으니 처음엔 미리 받아두면 편함:
 
 ```bash
