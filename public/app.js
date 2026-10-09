@@ -16,6 +16,8 @@ const api = async (p) => {
 // ---------- 데이터 ----------
 const getMeta = () => api(STATIC ? 'data/meta.json' : '/api/meta');
 const getOverview = (code) => api(STATIC ? `data/overview/${code}.json` : `/api/overview/${code}`);
+// 금리·주택가격 전망 심리 (한국은행). 키가 없어 파일이 없으면 null → 카드를 그리지 않는다
+const getMacro = () => (state.macro ||= api(STATIC ? 'data/macro.json' : '/api/macro').catch(() => null));
 
 const dateStr = (n) => { const s = String(n); return `${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}`; };
 function unpack(p, months) {
@@ -144,6 +146,22 @@ const timeAxis = {
   ticks: { maxTicksLimit: 8, maxRotation: 0, callback: (v, i, ticks) => (i && tsLabel(ticks[i - 1].value) === tsLabel(v) ? '' : tsLabel(v)) },
   afterDataLimits: (s) => { const pad = (MIN_SPAN - (s.max - s.min)) / 2; if (pad > 0) { s.min -= pad; s.max += pad; } },
 };
+// 선 끝에 계열 이름을 직접 표시 (색만으로 구분하지 않게, 글자는 본문 색). 오른쪽 여백은 차트 layout.padding으로 확보
+const endLabels = {
+  id: 'endLabels',
+  afterDatasetsDraw(c) {
+    const { ctx } = c;
+    ctx.save();
+    ctx.font = `12px ${Chart.defaults.font.family}`; ctx.fillStyle = css('--ink-2'); ctx.textBaseline = 'middle';
+    c.data.datasets.forEach((ds, i) => {
+      if (ds.endLabel === false) return;
+      const pts = c.getDatasetMeta(i).data;
+      const j = ds.data.findLastIndex((v) => v != null);
+      if (j >= 0) ctx.fillText(ds.label, pts[j].x + 6, pts[j].y);
+    });
+    ctx.restore();
+  },
+};
 const legend = (items) => `<div class="legend">${items.map(([label, color, dot]) => `<span><i class="${dot ? 'dot' : ''}" style="background:${color}"></i>${label}</span>`).join('')}</div>`;
 
 // ---------- 라우터 ----------
@@ -245,7 +263,9 @@ async function viewOverview(group, id) {
       <p class="muted" style="margin:-4px 0 10px;font-size:12px">신고가 비율: 최근 3개월 거래 중 같은 단지·평형의 이전 최고가를 넘은 거래 비중. 시장이 달아오르면 가장 먼저 올라가요.</p>
       <div class="chart-box tall"><canvas id="phaseMap"></canvas></div>
     </div>
+    <div id="macro"></div>
     <div class="card table-wrap"><table><thead></thead><tbody></tbody></table></div>`;
+  renderMacro(id);
 
   const rows = regions.map((r) => ({ ...r, ...(state.overview[r.code] || {}) }));
   const thead = app.querySelector('thead'), tbody = app.querySelector('tbody');
@@ -285,6 +305,66 @@ async function viewOverview(group, id) {
       render(); refreshMap();
     }
   }));
+}
+
+// ---------- 금리·심리 (전국) ----------
+async function renderMacro(id) {
+  const m = await getMacro();
+  const box = document.getElementById('macro');
+  if (isStale(id) || !box || !m?.series?.length) return;
+  const by = Object.fromEntries(m.series.map((x) => [x.id, x]));
+  // 최근 36개월, 계열마다 빠진 달은 null
+  const yms = state.meta.yms.slice(-36);
+  const vals = (x) => { const mp = new Map(x?.points || []); return yms.map((ym) => mp.get(ym) ?? null); };
+  const last = (x) => x?.points?.[x.points.length - 1];
+  const ago = (x, n) => x?.points?.[x.points.length - 1 - n]?.[1];
+  const chgPt = (x, n = 3, unit = '%p') => {
+    const [, v] = last(x) || [], p = ago(x, n);
+    if (v == null || p == null) return '';
+    const d = Math.round((v - p) * 100) / 100;
+    return d ? `<span class="${d > 0 ? 'up' : 'down'}">${d > 0 ? '▲' : '▼'} ${Math.abs(d)}${unit}</span>` : '<span class="muted">변화 없음</span>';
+  };
+  const rates = ['baseRate', 'mortgageRate', 'jeonseLoanRate'].map((k) => by[k]).filter((x) => x?.points.length);
+  const csi = by.housingCsi?.points.length ? by.housingCsi : null;
+  const colors = rates.map((_, i) => css(`--series-${i + 1}`));
+  box.innerHTML = `
+    <div class="card">
+      <h2>금리 · 주택가격 전망 심리 (전국)</h2>
+      <p class="muted" style="margin:-6px 0 12px;font-size:12px">한국은행 통계. 금리는 매수 여력, 주택가격전망 CSI는 1년 뒤 집값이 오를 거라 보는 가구가 많을수록 100보다 커요. 금리가 내리고 CSI가 100을 넘어 오르면 매수세가 붙기 쉬워요.${m.missing?.length ? ` (못 받은 지표: ${esc(m.missing.join(', '))})` : ''}</p>
+      <div class="kpis">
+        ${rates.map((x) => `<div class="kpi"><div class="label">${esc(x.name)}</div><div class="value num">${last(x)[1].toFixed(2)}%</div><div class="hint">${fmtYm(last(x)[0])} · 3개월 전 대비 ${chgPt(x)}</div></div>`).join('')}
+        ${csi ? `<div class="kpi"><div class="label">주택가격전망 CSI</div><div class="value num">${last(csi)[1]}</div><div class="hint">${fmtYm(last(csi)[0])} · 3개월 전 대비 ${chgPt(csi, 3, '')}</div></div>` : ''}
+      </div>
+      <div class="grid2">
+        ${rates.length ? `<div><h2 style="font-size:14px">금리 (연 %)</h2>${legend(rates.map((x, i) => [esc(x.name), colors[i]]))}<div class="chart-box short"><canvas id="rates"></canvas></div></div>` : '<div></div>'}
+        ${csi ? `<div><h2 style="font-size:14px">주택가격전망 CSI</h2>${legend([['주택가격전망 CSI', css('--series-1')], ['기준선 100', css('--muted')]])}<div class="chart-box short"><canvas id="csi"></canvas></div></div>` : ''}
+      </div>
+    </div>`;
+  const labels = yms.map(fmtYm);
+  const line = (label, data, color, extra = {}) => ({ label, data, borderColor: color, backgroundColor: color, borderWidth: 2, pointRadius: 0, stepped: false, spanGaps: true, ...extra });
+  const base = (fmt) => ({
+    interaction: { mode: 'index', intersect: false },
+    scales: { x: { grid: { display: false }, ticks: { maxTicksLimit: 6, maxRotation: 0 } }, y: { ticks: { callback: fmt } } },
+    plugins: { tooltip: { filter: (i) => i.dataset.endLabel !== false, callbacks: { label: (c) => ` ${c.dataset.label} ${fmt(c.raw)}` } } },
+  });
+  if (rates.length) {
+    makeChart(document.getElementById('rates'), {
+      type: 'line',
+      data: { labels, datasets: rates.map((x, i) => line(x.name, vals(x), colors[i], x.id === 'baseRate' ? { stepped: 'before' } : {})) },
+      options: { ...base((v) => `${Number(v).toFixed(2)}%`), layout: { padding: { right: 110 } } },
+      plugins: [endLabels],
+    });
+  }
+  if (csi) {
+    makeChart(document.getElementById('csi'), {
+      type: 'line',
+      data: { labels, datasets: [
+        line('주택가격전망 CSI', vals(csi), css('--series-1')),
+        line('기준선', yms.map(() => 100), css('--muted'), { borderWidth: 1.5, borderDash: [4, 4], endLabel: false }),
+      ] },
+      options: base((v) => `${Math.round(v)}`),
+    });
+  }
 }
 
 function phaseMap(canvas) {
@@ -751,21 +831,6 @@ function compareChart(items) {
     return it.series.map((r) => (r.v == null ? null : mode === 'idx' ? (r.v / base) * 100 : r.v));
   });
   let mode = 'ppy';
-  // 선 끝에 단지명을 직접 표시 (색만으로 구분하지 않게, 글자는 본문 색)
-  const endLabels = {
-    id: 'endLabels',
-    afterDatasetsDraw(c) {
-      const { ctx } = c;
-      ctx.save();
-      ctx.font = `12px ${Chart.defaults.font.family}`; ctx.fillStyle = css('--ink-2'); ctx.textBaseline = 'middle';
-      c.data.datasets.forEach((ds, i) => {
-        const pts = c.getDatasetMeta(i).data;
-        const j = ds.data.findLastIndex((v) => v != null);
-        if (j >= 0) ctx.fillText(ds.label, pts[j].x + 6, pts[j].y);
-      });
-      ctx.restore();
-    },
-  };
   const chart = makeChart(canvas, {
     type: 'line',
     data: { labels: yms.map(fmtYm), datasets: items.map((it, i) => ({ label: it.name, data: data(mode)[i], borderColor: colors[i], backgroundColor: colors[i], borderWidth: 2, pointRadius: 0, tension: 0.25, spanGaps: true })) },

@@ -2,9 +2,10 @@ require('./lib/env');
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
-const { getRange, mode } = require('./lib/data');
+const { getRange, monthRange, mode } = require('./lib/data');
 const an = require('./lib/analyze');
 const { pack } = require('./lib/pack');
+const { getMacro } = require('./lib/ecos');
 const regions = require('./data/regions.json');
 
 const PORT = Number(process.env.PORT) || 3000;
@@ -13,6 +14,7 @@ const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; cha
 
 const clampMonths = (v, def) => Math.min(240, Math.max(13, Number(v) || def));
 const regionOf = (code) => regions.find((r) => r.code === code);
+let macroCache = null;
 
 const routes = [
   [/^\/api\/meta$/, async () => ({ mode: mode(), regions: regions.map(({ demoBase, ...r }) => r) })],
@@ -25,6 +27,16 @@ const routes = [
     const [{ yms, rows }, rent] = [await getRange('trade', code, months), await getRange('rent', code, months)];
     const { series, indicators } = an.regionSummary(yms, rows, rent.rows);
     return { code, series: series.slice(-25).map(({ ym, ma, count }) => ({ ym, ma, count })), indicators };
+  }],
+
+  // 금리·주택가격 전망 심리 (한국은행 ECOS). 월별 지표라 12시간 동안 메모리에 둔다
+  [/^\/api\/macro$/, async () => {
+    if (macroCache && Date.now() - macroCache.at < 12 * 60 * 60 * 1000) return macroCache.data;
+    const yms = monthRange(120);
+    const data = await getMacro(yms[0], yms[yms.length - 1]);
+    if (!data) throw notFound('ECOS_API_KEY가 없어 금리·심리 지표를 볼 수 없습니다');
+    macroCache = { at: Date.now(), data };
+    return data;
   }],
 
   // 지역 원본 데이터(압축). 지역·단지 화면의 계산은 브라우저(analyze.js)에서 한다

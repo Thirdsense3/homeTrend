@@ -6,6 +6,7 @@ const path = require('path');
 const { getMonth, monthRange, mode, pool } = require('../lib/data');
 const an = require('../lib/analyze');
 const { pack } = require('../lib/pack');
+const { getMacro } = require('../lib/ecos');
 const regions = require('../data/regions.json');
 
 const ROOT = path.join(__dirname, '..');
@@ -62,6 +63,17 @@ function write(rel, data) {
     regions: regions.map(({ demoBase, ...r }) => r),
     missing: failures.map(({ code, kind, ym }) => `${code}/${kind}/${ym}`),
   });
+
+  // 금리·주택가격 전망 심리 (한국은행 ECOS). 키가 없거나 실패해도 실거래 배포는 그대로 진행
+  try {
+    const macro = await getMacro(yms[0], yms[yms.length - 1]);
+    if (macro) {
+      write('data/macro.json', { builtAt: new Date().toISOString(), ...macro });
+      console.log(`한국은행 지표 ${macro.series.length}개${macro.missing.length ? ` (실패: ${macro.missing.join(', ')})` : ''}`);
+    } else console.log('ECOS_API_KEY 없음 → 금리·심리 지표 생략');
+  } catch (e) {
+    console.warn(`한국은행 지표 실패 (생략): ${e.message}`);
+  }
 
   // 페이지: public/ 복사 + 분석 모듈 + 정적 모드 표시
   for (const f of fs.readdirSync(path.join(ROOT, 'public'))) {
