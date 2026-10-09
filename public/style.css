@@ -194,6 +194,11 @@ body.busy .top::after {
 .chips i { display: inline-block; width: 12px; height: 3px; border-radius: 2px; }
 .chips i.dot { width: 8px; height: 8px; border-radius: 50%; }
 .chips button:not(.on) i { opacity: 0.3; }
+.chips button:not(.on) { text-decoration: line-through; text-decoration-color: var(--axis); }
+/* 항상 보이는 계열 (끌 수 없음) */
+.chip-static { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; font-size: 12px; color: var(--ink); }
+.chip-static i { display: inline-block; width: 12px; height: 3px; border-radius: 2px; background: var(--series-1); }
+.chip-static i.dot { width: 8px; height: 8px; border-radius: 50%; }
 @media (max-width: 720px) {
   .tv-value { font-size: 24px; }
   .tv-box { height: 360px; }

@@ -206,7 +206,8 @@ function tvChart(el) {
 
 // 보이는 구간이 바뀔 때: 이동평균이 있는 첫(a)·끝(b) 달을 찾아 선 색(올랐으면 빨강·내렸으면 파랑)과
 // 구간 최고·최저(점 + 가로 점선, 값은 오른쪽 축 — 점 옆 글자는 차트 가장자리에서 잘린다)를 갱신하고 onChange(a, b)
-function trackRange(chart, s, ma, line, onChange) {
+// label: 축 라벨에 붙일 이름('매매'), swatch: 선 색을 따라 바뀌는 범례 표시
+function trackRange(chart, s, ma, line, onChange, label, swatch) {
   const last = s.length - 1;
   const markers = LWC.createSeriesMarkers(line, []);
   let extremes = [];
@@ -219,9 +220,10 @@ function trackRange(chart, s, ma, line, onChange) {
     const a = idx[0], b = idx[idx.length - 1];
     const c = css(ma[b] >= ma[a] ? '--up' : '--down');
     line.applyOptions({ lineColor: c, topColor: alpha(c, 0.18), bottomColor: alpha(c, 0) });
+    if (swatch) swatch.style.background = c;
     let hiI = a, loI = a;
     idx.forEach((i) => { if (ma[i] > ma[hiI]) hiI = i; if (ma[i] < ma[loI]) loI = i; });
-    const ext = hiI === loI ? [] : [[hiI, '최고', css('--up')], [loI, '최저', css('--down')]].sort((x, y) => x[0] - y[0]);
+    const ext = hiI === loI ? [] : [[hiI, `${label} 최고`, css('--up')], [loI, `${label} 최저`, css('--down')]].sort((x, y) => x[0] - y[0]);
     markers.setMarkers(ext.map(([i, , color]) => ({ time: ymSec(s[i].ym), position: 'inBar', shape: 'circle', color, size: 0.6 })));
     extremes.forEach((l) => line.removePriceLine(l));
     // 지금이 최고·최저면 축의 현재값 라벨과 겹치므로 선은 생략
@@ -255,9 +257,9 @@ function priceVolumeChart(s, ind) {
   const ma = s.map((r, i) => (i < last ? r.ma : null));
   const pt = (r, v) => (v == null ? { time: ymSec(r.ym) } : { time: ymSec(r.ym), value: v });
   const manFmt = { type: 'custom', minMove: 1, formatter: fmtMan };
-  const price = chart.addSeries(LWC.AreaSeries, { lineWidth: 2, priceFormat: manFmt, priceLineStyle: LWC.LineStyle.Dotted, crosshairMarkerRadius: 4, crosshairMarkerBorderColor: css('--surface') });
+  const price = chart.addSeries(LWC.AreaSeries, { title: '매매', lineWidth: 2, priceFormat: manFmt, priceLineStyle: LWC.LineStyle.Dotted, crosshairMarkerRadius: 4, crosshairMarkerBorderColor: css('--surface') });
   price.setData(s.map((r, i) => pt(r, ma[i])));
-  const jeonse = chart.addSeries(LWC.LineSeries, { color: css('--series-2'), lineWidth: 2, priceFormat: manFmt, priceLineVisible: false, crosshairMarkerRadius: 3, visible: state.pv.jeonse });
+  const jeonse = chart.addSeries(LWC.LineSeries, { title: '전세', color: css('--series-2'), lineWidth: 2, priceFormat: manFmt, priceLineVisible: false, crosshairMarkerRadius: 3, visible: state.pv.jeonse });
   jeonse.setData(s.map((r, i) => pt(r, i < last ? r.jeonseMa : null)));
   const median = chart.addSeries(LWC.LineSeries, { color: css('--series-1-soft'), lineVisible: false, pointMarkersVisible: true, pointMarkersRadius: 2.5, priceFormat: manFmt, lastValueVisible: false, priceLineVisible: false, crosshairMarkerVisible: false, visible: state.pv.median });
   median.setData(s.map((r) => pt(r, r.median)));
@@ -282,12 +284,12 @@ function priceVolumeChart(s, ind) {
     headSub.innerHTML = headJoin([
       `<b>${fmtYm(r.ym)}</b>`,
       chg != null ? `${delta(chg)} <span class="muted">${fmtYm(s[a].ym)} 대비</span>` : '',
-      state.pv.jeonse && k < last && r.jeonseMa != null ? `전세 ${fmtMan(r.jeonseMa)}` : '',
-      state.pv.median && r.median != null ? `월 중위 ${fmtMan(r.median)}` : '',
-      `거래 ${r.count}건${r.bulk ? ` (+일괄 ${r.bulk})` : ''}${k === last ? ' · 신고 진행 중' : ''}`,
+      state.pv.median && r.median != null ? `매매 월 중위 ${fmtMan(r.median)}` : '',
+      state.pv.jeonse && k < last && r.jeonseMa != null ? `전세 이동평균 ${fmtMan(r.jeonseMa)}` : '',
+      `매매 거래 ${r.count}건${r.bulk ? ` (+일괄 ${r.bulk})` : ''}${k === last ? ' · 신고 진행 중' : ''}`,
     ]);
   };
-  const onRange = trackRange(chart, s, ma, price, (a1, b1) => { [a, b] = [a1, b1]; showHead(null); });
+  const onRange = trackRange(chart, s, ma, price, (a1, b1) => { [a, b] = [a1, b1]; showHead(null); }, '매매', document.getElementById('pvSwatch'));
   const byTime = new Map(s.map((r, i) => [ymSec(r.ym), i]));
   chart.subscribeCrosshairMove((p) => showHead(p.time != null ? byTime.get(p.time) ?? null : null));
 
@@ -363,9 +365,9 @@ function aptChart(sel, allTrades, allJeonse) {
   const eokFmt = { type: 'custom', minMove: 1, formatter: fmtEok };
   const ma = s.map((r, i) => (i < last ? r.ma : null));
   const pt = (r, v) => (v == null ? { time: ymSec(r.ym) } : { time: ymSec(r.ym), value: v });
-  const line = chart.addSeries(LWC.AreaSeries, { lineWidth: 2, priceFormat: eokFmt, priceLineStyle: LWC.LineStyle.Dotted, crosshairMarkerVisible: false });
+  const line = chart.addSeries(LWC.AreaSeries, { title: '매매', lineWidth: 2, priceFormat: eokFmt, priceLineStyle: LWC.LineStyle.Dotted, crosshairMarkerVisible: false });
   line.setData(s.map((r, i) => pt(r, ma[i])));
-  const jLine = chart.addSeries(LWC.LineSeries, { color: css('--series-2'), lineWidth: 2, priceFormat: eokFmt, priceLineVisible: false, crosshairMarkerVisible: false });
+  const jLine = chart.addSeries(LWC.LineSeries, { title: '전세', color: css('--series-2'), lineWidth: 2, priceFormat: eokFmt, priceLineVisible: false, crosshairMarkerVisible: false });
   jLine.setData(s.map((r, i) => pt(r, i < last ? r.jeonseMa : null)));
   const dotOpts = { priceFormat: eokFmt, ring: css('--up'), focus: css('--ink') };
   const jView = new DotsView(), tView = new DotsView();
@@ -414,7 +416,7 @@ function aptChart(sel, allTrades, allJeonse) {
       headValue.innerHTML = `${fmtEok(dot.y)}${dot.high ? ' <span class="tag high">신고가</span>' : ''}`;
       headSub.innerHTML = headJoin([
         `<b>${dd(t.date)}</b>`, `${dot.kind} · ${t.floor}층`,
-        anchor && anchor !== dot ? vs(dot.y) : (dot.kind === '매매' && m ? `${delta(dot.y / m - 1)} <span class="muted">이동평균 대비</span>` : ''),
+        anchor && anchor !== dot ? vs(dot.y) : (dot.kind === '매매' && m ? `${delta(dot.y / m - 1)} <span class="muted">매매 6개월 이동평균 대비</span>` : ''),
         dot.kind === '매매' ? `평당 ${fmtMan(dot.y / (t.area / PYEONG))}` : '',
       ]);
       return;
@@ -430,7 +432,7 @@ function aptChart(sel, allTrades, allJeonse) {
       i === last ? '신고 진행 중' : '',
     ]);
   };
-  const onRange = trackRange(chart, s, ma, line, (a1, b1) => { [a, b] = [a1, b1]; showHead(null); });
+  const onRange = trackRange(chart, s, ma, line, (a1, b1) => { [a, b] = [a1, b1]; showHead(null); }, '매매', document.getElementById('apSwatch'));
 
   // 십자선 근처(10px 안)의 점 찾기. 점 위치는 렌더러와 같은 식으로 계산
   const byTime = new Map(s.map((r, i) => [ymSec(r.ym), i]));
@@ -473,6 +475,7 @@ function aptChart(sel, allTrades, allJeonse) {
 
   app.querySelectorAll('#apMode button').forEach((btn) => btn.addEventListener('click', () => {
     o.mode = btn.dataset.m;
+    document.getElementById('apKind').textContent = o.mode === 'dots' ? '매매 실거래' : '매매 월봉';
     app.querySelectorAll('#apMode button').forEach((x) => x.classList.toggle('on', x === btn));
     apply(); showHead(null);
   }));
@@ -979,7 +982,7 @@ async function viewRegion(code, id) {
     ${ind.phase ? `<p class="phase-note card">${ind.phase.id ? `${ind.phase.id}국면 ` : ''}<b>${esc(ind.phase.name)}</b> — ${esc(ind.phase.note)}</p>` : ''}
     <div class="card">
       <div class="tv-head">
-        <div class="tv-label">평당 매매가 <span class="muted">3개월 이동평균 · 구성 보정</span> ${tip('아래 칸은 월별 매매 거래량이고, 점선은 장기 평균(36개월 중위)이에요. 마지막 달(옅은 막대)은 신고 진행 중이라 덜 잡혀요. 노란 막대는 통매각 같은 일괄 거래로 지표 계산에서 뺐어요. 휠·핀치로 확대하고 끌어서 이동할 수 있어요.')}</div>
+        <div class="tv-label">평당 매매가 <span class="muted">3개월 이동평균 · 구성 보정 · 만원/3.3㎡</span> ${tip('아래 칸은 월별 매매 거래량이고, 점선은 장기 평균(36개월 중위)이에요. 마지막 달(옅은 막대)은 신고 진행 중이라 덜 잡혀요. 노란 막대는 통매각 같은 일괄 거래로 지표 계산에서 뺐어요. 휠·핀치로 확대하고 끌어서 이동할 수 있어요.')}</div>
         <div class="tv-value num" id="pvValue"></div>
         <div class="tv-sub num" id="pvSub"></div>
       </div>
@@ -987,8 +990,9 @@ async function viewRegion(code, id) {
         ${rangeSeg('pvRange', s.length)}
         <span class="spacer"></span>
         <div class="chips" id="pvToggle">
-          <button data-s="median" class="${state.pv.median ? 'on' : ''}"><i class="dot" style="background:${css('--series-1-soft')}"></i>월 중위값</button>
-          <button data-s="jeonse" class="${state.pv.jeonse ? 'on' : ''}"><i style="background:${css('--series-2')}"></i>전세</button>
+          <span class="chip-static"><i id="pvSwatch"></i>매매 3개월 이동평균</span>
+          <button data-s="median" class="${state.pv.median ? 'on' : ''}" title="눌러서 켜고 끄기"><i class="dot" style="background:${css('--series-1-soft')}"></i>매매 월 중위값</button>
+          <button data-s="jeonse" class="${state.pv.jeonse ? 'on' : ''}" title="눌러서 켜고 끄기"><i style="background:${css('--series-2')}"></i>전세 3개월 이동평균</button>
         </div>
       </div>
       <div class="tv-box" id="pv"></div>
@@ -1146,8 +1150,10 @@ async function viewApt(code, key, id) {
           <div class="seg" id="apMode">${[['dots', '실거래'], ['candle', '월봉']].map(([m, l]) => `<button data-m="${m}" class="${state.ap.mode === m ? 'on' : ''}">${l}</button>`).join('')}</div>
           <span class="spacer"></span>
           <div class="chips" id="apToggle">
-            <button data-s="jeonse" class="${state.ap.jeonse ? 'on' : ''}"><i class="dot" style="background:${css('--series-2')}"></i>전세</button>
-            <button data-s="low" class="${state.ap.low ? 'on' : ''}" title="저층(1~3층·지하)은 시세보다 낮게 거래되는 경우가 많아요">1~3층</button>
+            <span class="chip-static"><i id="apSwatch"></i>매매 6개월 이동평균</span>
+            <span class="chip-static"><i class="dot" style="background:${css('--series-1')}"></i><span id="apKind">${state.ap.mode === 'dots' ? '매매 실거래' : '매매 월봉'}</span></span>
+            <button data-s="jeonse" class="${state.ap.jeonse ? 'on' : ''}" title="눌러서 켜고 끄기"><i class="dot" style="background:${css('--series-2')}"></i>전세 실거래·이동평균</button>
+            <button data-s="low" class="${state.ap.low ? 'on' : ''}" title="저층(1~3층·지하)은 시세보다 낮게 거래되는 경우가 많아요. 눌러서 켜고 끄기">1~3층 포함</button>
           </div>
         </div>
         <div class="tv-box" id="ap"></div>
