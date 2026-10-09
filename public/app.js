@@ -89,6 +89,28 @@ function delta(x, d = 1) {
 const fmtYm = (ym) => (ym ? `${ym.slice(2, 4)}.${ym.slice(4)}` : '–');
 const tsLabel = (v) => { const d = new Date(v); return `${String(d.getUTCFullYear()).slice(2)}.${String(d.getUTCMonth() + 1).padStart(2, '0')}`; };
 const median = (xs) => { if (!xs.length) return null; const s = [...xs].sort((a, b) => a - b), m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
+// ⓘ 설명 말풍선: 데스크톱은 마우스를 올리면, 모바일은 누르면 (아래쪽 시트로) 보인다. 긴 설명 문단 대신 쓴다
+const tip = (text) => `<button type="button" class="tip" aria-label="설명 보기" data-tip="${esc(text)}">i</button>`;
+document.addEventListener('click', (e) => {
+  const t = e.target.closest('.tip');
+  document.querySelectorAll('.tip.open').forEach((x) => x !== t && x.classList.remove('open'));
+  if (t) t.classList.toggle('open');
+});
+// 숫자를 문장으로: '1.2% 올랐고' / '거의 그대로이고'
+const pctSpan = (x, d = 1) => `<span class="${x > 0 ? 'up' : 'down'}">${Math.abs(x * 100).toFixed(d)}%</span>`;
+function regionLead(name, ind) {
+  const out = [];
+  if (ind.chg3m != null) {
+    out.push(Math.abs(ind.chg3m) < 0.003 ? `${esc(name)} 평당가는 최근 3개월 거의 그대로이고` : `${esc(name)} 평당가는 최근 3개월 ${pctSpan(ind.chg3m)} ${ind.chg3m > 0 ? '올랐고' : '내렸고'}`);
+  }
+  if (ind.volVsAvg != null) {
+    out.push(Math.abs(ind.volVsAvg) < 0.05 ? '거래량은 장기 평균 수준이에요.' : `거래량은 장기 평균보다 ${pctSpan(ind.volVsAvg, 0)} ${ind.volVsAvg > 0 ? '많아요.' : '적어요.'}`);
+  }
+  if (ind.newHighShare != null) out.push(`최근 3개월 거래 중 <b>${fmtPct(ind.newHighShare, 0)}</b>가 신고가예요.`);
+  return out.join(' ');
+}
+// 데이터를 기다리는 동안 보여 줄 회색 틀
+const skeleton = (note = '') => `<div class="sk sk-title"></div><div class="sk sk-line"></div><div class="kpis">${'<div class="sk sk-kpi"></div>'.repeat(4)}</div><div class="sk sk-chart"></div>${note ? `<p class="muted" style="font-size:12px">${note}</p>` : ''}`;
 const phaseChip = (p) => (p ? `<span class="phase" title="${esc(p.note)}"><b>${p.id ? `${p.id}국면 ` : ''}${esc(p.name)}</b><span class="muted">${esc(p.desc)}</span></span>` : '<span class="muted">–</span>');
 
 // 관심단지 (브라우저 저장). seen: 마지막으로 확인한 거래일 → 그 뒤 거래를 '새 거래'로 표시
@@ -511,7 +533,99 @@ function requireRegion(code) {
   return r;
 }
 window.addEventListener('hashchange', () => { window.scrollTo(0, 0); route(); });
-matchMedia('(prefers-color-scheme: dark)').addEventListener('change', route);
+
+// ---------- 테마: 자동(시스템) / 라이트 / 다크 ----------
+// 차트 색은 그릴 때 CSS 변수에서 읽으므로 테마가 바뀌면 화면을 다시 그린다
+const THEMES = [['auto', '◐', '자동'], ['light', '☀', '라이트'], ['dark', '☾', '다크']];
+const darkMq = matchMedia('(prefers-color-scheme: dark)');
+function getTheme() { try { return localStorage.getItem('homeTrend.theme') || 'auto'; } catch (_) { return 'auto'; } }
+function applyTheme() {
+  const t = getTheme();
+  document.documentElement.dataset.theme = t === 'auto' ? (darkMq.matches ? 'dark' : 'light') : t;
+  const [, icon, label] = THEMES.find((x) => x[0] === t) || THEMES[0];
+  const b = document.getElementById('theme');
+  b.textContent = icon;
+  b.title = `테마: ${label} (누르면 바뀜)`;
+  b.setAttribute('aria-label', b.title);
+}
+document.getElementById('theme').addEventListener('click', () => {
+  const i = THEMES.findIndex((x) => x[0] === getTheme());
+  try { localStorage.setItem('homeTrend.theme', THEMES[(i + 1) % THEMES.length][0]); } catch (_) { /* 저장 불가 */ }
+  applyTheme();
+  route();
+});
+darkMq.addEventListener('change', () => { if (getTheme() === 'auto') { applyTheme(); route(); } });
+applyTheme();
+
+// ---------- 전체 검색 (상단): 지역 이름 + 모든 지역의 단지 ----------
+// 목록은 처음 검색창을 누를 때 한 번 받는다 (정적 사이트: 빌드 때 만든 data/search.json)
+const getSearch = () => (state.search ||= api(STATIC ? 'data/search.json' : '/api/search').catch((e) => { state.search = null; throw e; }));
+const norm = (s) => String(s).toLowerCase().replace(/\s+/g, '');
+function searchFlat(idx) {
+  return state.meta.regions.flatMap((r) => (idx.regions[r.code] || []).map(([dong, apt, cnt]) => ({ r, dong, apt, cnt, na: norm(apt), nd: norm(dong) })));
+}
+// 지역 → 단지명이 검색어로 시작 → 단지명에 포함 → 동 이름에 포함 순, 같으면 거래 많은 순
+function searchMatch(flat, q) {
+  const n = norm(q);
+  if (!n) return [];
+  const regs = state.meta.regions.filter((r) => norm(r.name).includes(n)).slice(0, 5).map((r) => ({ r }));
+  const apts = [];
+  for (const e of flat) {
+    const at = e.na.indexOf(n);
+    if (at < 0 && !e.nd.includes(n)) continue;
+    apts.push({ ...e, score: at === 0 ? 0 : at > 0 ? 1 : 2 });
+  }
+  apts.sort((x, y) => x.score - y.score || y.cnt - x.cnt);
+  return [...regs, ...apts.slice(0, 30)];
+}
+function highlight(text, q) {
+  const i = text.toLowerCase().indexOf(q.trim().toLowerCase());
+  if (!q.trim() || i < 0) return esc(text);
+  return `${esc(text.slice(0, i))}<mark>${esc(text.slice(i, i + q.trim().length))}</mark>${esc(text.slice(i + q.trim().length))}`;
+}
+(function bindSearch() {
+  const box = document.getElementById('gsearch'), input = document.getElementById('gq'), list = document.getElementById('gsList');
+  let flat = null, items = [], sel = 0, partial = false, failed = false;
+  const href = (it) => (it.apt ? `#/a/${it.r.code}/${encodeURIComponent(`${it.dong}|${it.apt}`)}` : `#/r/${it.r.code}`);
+  const close = () => { list.hidden = true; };
+  const draw = () => {
+    const q = input.value;
+    list.hidden = !q.trim();
+    if (list.hidden) return;
+    if (!flat) { list.innerHTML = `<div class="gs-msg">${failed ? '검색 목록을 불러오지 못했어요' : '검색 목록 불러오는 중…'}</div>`; return; }
+    items = searchMatch(flat, q);
+    sel = Math.min(sel, Math.max(0, items.length - 1));
+    list.innerHTML = (items.length
+      ? items.map((it, i) => `<a class="gs-item${i === sel ? ' on' : ''}" href="${href(it)}" data-i="${i}">${it.apt
+        ? `<b>${highlight(it.apt, q)}</b><span class="muted">${esc(it.r.name)} ${highlight(it.dong, q)} · 거래 ${it.cnt}건</span>`
+        : `<b>${highlight(it.r.name, q)}</b><span class="muted">지역 · ${esc(it.r.group)}</span>`}</a>`).join('')
+      : '<div class="gs-msg">찾는 단지가 없어요</div>')
+      + (partial ? '<div class="gs-msg muted">로컬 서버에선 받아 둔 지역의 단지만 검색돼요</div>' : '');
+    list.querySelector('.on')?.scrollIntoView({ block: 'nearest' });
+  };
+  input.addEventListener('focus', () => {
+    if (!state.meta) return; // 첫 화면을 불러오기 전
+    getSearch().then((idx) => { flat ||= searchFlat(idx); partial = !!idx.partial; draw(); }, () => { failed = true; draw(); });
+    draw();
+  });
+  input.addEventListener('input', () => { sel = 0; draw(); });
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (items.length) sel = (sel + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
+      draw();
+    } else if (e.key === 'Enter' && items[sel] && !list.hidden) {
+      location.hash = href(items[sel]);
+      input.value = ''; close(); input.blur();
+    } else if (e.key === 'Escape') { close(); input.blur(); }
+  });
+  list.addEventListener('click', (e) => { if (e.target.closest('a')) { input.value = ''; close(); } });
+  document.addEventListener('click', (e) => { if (!box.contains(e.target)) close(); });
+  // '/' 키로 검색창으로
+  document.addEventListener('keydown', (e) => {
+    if (e.key === '/' && !/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName)) { e.preventDefault(); input.focus(); }
+  });
+}());
 
 // ---------- 개요: 지역별 비교 ----------
 const OV_COLS = [
@@ -541,7 +655,17 @@ function sortRows(rows, cols, [key, dir]) {
 function tableHead(cols, sortKey, [key, dir]) {
   return `<tr>${cols.map(([k, label, getter], i) => `<th class="${i === 0 ? 'l' : ''} ${k === key ? 'sorted' + (dir > 0 ? ' asc' : '') : ''}" data-sort="${getter ? k : ''}" data-table="${sortKey}">${label}</th>`).join('')}</tr>`;
 }
+// 모바일에선 표 머리 대신 정렬 선택 상자를 쓴다 (표는 카드 목록으로 바뀜)
+const plain = (html) => html.replace(/<[^>]+>/g, '');
+function sortSelect(cols, sortKey, [key]) {
+  return `<label class="m-sort muted">정렬 <select data-table="${sortKey}">${cols.filter((c) => c[2]).map(([k, label]) => `<option value="${k}" ${k === key ? 'selected' : ''}>${plain(label)}</option>`).join('')}</select></label>`;
+}
+const cells = (cols, r, isLeft) => cols.map(([, label, , f], i) => `<td class="${isLeft(i) ? 'l' : ''}" data-label="${esc(plain(label))}">${f(r)}</td>`).join('');
 function bindSort(root, sortKey, rerender) {
+  root.querySelectorAll(`select[data-table="${sortKey}"]`).forEach((s) => s.addEventListener('change', () => {
+    state.sort[sortKey] = [s.value, ['name', 'apt', 'dong', 'fromPeak'].includes(s.value) ? 1 : -1];
+    rerender();
+  }));
   root.querySelectorAll(`th[data-table="${sortKey}"]`).forEach((th) => th.addEventListener('click', () => {
     const k = th.dataset.sort;
     if (!k) return;
@@ -558,25 +682,32 @@ async function viewOverview(group, id) {
   // 지난번에 실패한 지역은 다시 시도
   regions.forEach((r) => { if (state.overview[r.code]?.error) delete state.overview[r.code]; });
   app.innerHTML = `
-    <h1>${esc(group)} 지역별 시세 트렌드</h1>
-    <p class="sub">실거래 평당가의 3개월 이동평균 기준 (단지 구성 보정, 신고 진행 중인 지난달·통매각 같은 일괄 거래 제외). 거래량은 최근 3개월을 36개월 평균과 비교해요. 지역을 누르면 단지별로 볼 수 있어요.</p>
+    <h1>${esc(group)} 지역별 시세 트렌드 ${tip('실거래 평당가의 3개월 이동평균 기준 (단지 구성 보정, 신고 진행 중인 지난달·통매각 같은 일괄 거래 제외). 거래량은 최근 3개월을 36개월 평균과 비교해요. 신고가 비율은 최근 3개월 거래 중 같은 단지·평형의 이전 최고가를 넘은 거래 비중으로, 시장이 달아오르면 가장 먼저 올라가요.')}</h1>
+    <p class="lead" id="ovLead">지역별 실거래를 불러오는 중이에요…</p>
     <div class="card">
-      <div class="row" style="margin-bottom:8px"><h2 style="margin:0">국면 지도 — 가격 변화 × 거래량 (최근 3개월)</h2><span class="spacer"></span><label class="muted" style="font-size:12px"><input type="checkbox" id="trail" ${state.trail ? 'checked' : ''}> 모든 지역 이동 경로</label></div>
-      <p class="muted" style="margin:0 0 10px;font-size:12px">벌집순환모형: 거래량이 먼저 움직이고 가격이 따라옵니다. 오른쪽 아래(불황)→가운데 오른쪽(회복진입)→오른쪽 위(회복) 순서로 옮겨가는 지역을 주목하세요. 점에 마우스를 올리면 6개월 전 → 3개월 전 → 지금 이동 경로가 보여요.</p>
-      <p class="muted" style="margin:-4px 0 10px;font-size:12px">신고가 비율: 최근 3개월 거래 중 같은 단지·평형의 이전 최고가를 넘은 거래 비중. 시장이 달아오르면 가장 먼저 올라가요.</p>
+      <div class="row" style="margin-bottom:8px"><h2 style="margin:0">국면 지도 — 가격 변화 × 거래량 ${tip('벌집순환모형: 거래량이 먼저 움직이고 가격이 따라와요. 오른쪽 아래(불황) → 가운데 오른쪽(회복진입) → 오른쪽 위(회복) 순서로 옮겨가는 지역을 주목하세요. 점에 마우스를 올리면 6개월 전 → 3개월 전 → 지금 이동 경로가 보이고, 누르면 지역 화면으로 가요.')}</h2><span class="spacer"></span><label class="muted" style="font-size:12px"><input type="checkbox" id="trail" ${state.trail ? 'checked' : ''}> 모든 지역 이동 경로</label></div>
       <div class="chart-box tall"><canvas id="phaseMap"></canvas></div>
     </div>
     <div id="macro"></div>
-    <div class="card table-wrap"><table><thead></thead><tbody></tbody></table></div>`;
+    <div class="card"><div class="row"><h2 style="margin:0">지역별 지표</h2><span class="spacer"></span><span id="ovSort"></span></div><div class="table-wrap mcards"><table><thead></thead><tbody></tbody></table></div></div>`;
   renderMacro(id);
 
   const rows = regions.map((r) => ({ ...r, ...(state.overview[r.code] || {}) }));
   const thead = app.querySelector('thead'), tbody = app.querySelector('tbody');
   const render = () => {
     thead.innerHTML = tableHead(OV_COLS, 'overview', state.sort.overview);
+    document.getElementById('ovSort').innerHTML = sortSelect(OV_COLS, 'overview', state.sort.overview);
     tbody.innerHTML = sortRows(rows, OV_COLS, state.sort.overview)
-      .map((r) => `<tr class="link" data-href="#/r/${r.code}">${OV_COLS.map(([, , , f], i) => `<td class="${i === 0 ? 'l' : ''}">${f(r)}</td>`).join('')}</tr>`).join('');
+      .map((r) => `<tr class="link" data-href="#/r/${r.code}">${cells(OV_COLS, r, (i) => i === 0)}</tr>`).join('');
     bindSort(app, 'overview', render);
+    // 한 줄 요약: 3개월 새 오른 지역 수와 가장 많이 오른 곳
+    const ok = rows.filter((r) => r.ind?.chg3m != null);
+    if (ok.length) {
+      const up = ok.filter((r) => r.ind.chg3m > 0.003).length, down = ok.filter((r) => r.ind.chg3m < -0.003).length;
+      const best = ok.reduce((a, b) => (b.ind.chg3m > a.ind.chg3m ? b : a));
+      const hot = ok.filter((r) => r.ind.volVsAvg > 0.2).length;
+      document.getElementById('ovLead').innerHTML = `최근 3개월 ${esc(group)} ${ok.length}개 지역 중 ${up ? `<span class="up">${up}곳이 올랐고</span>` : '오른 곳은 없고'} ${down ? `<span class="down">${down}곳이 내렸어요</span>` : '내린 곳은 없어요'}. 가장 많이 오른 곳은 <a href="#/r/${best.code}">${esc(best.name)}</a>(${delta(best.ind.chg3m)})이고, 거래량이 장기 평균보다 20% 넘게 늘어난 곳은 ${hot}곳이에요.${ok.length < rows.length ? ` <span class="muted">(${rows.length - ok.length}곳 불러오는 중)</span>` : ''}`;
+    }
   };
   tbody.addEventListener('click', (e) => { const tr = e.target.closest('tr[data-href]'); if (tr) location.hash = tr.dataset.href; });
 
@@ -632,8 +763,8 @@ async function renderMacro(id) {
   const colors = rates.map((_, i) => css(`--series-${i + 1}`));
   box.innerHTML = `
     <div class="card">
-      <h2>금리 · 주택가격 전망 심리 (전국)</h2>
-      <p class="muted" style="margin:-6px 0 12px;font-size:12px">한국은행 통계. 금리는 매수 여력, 주택가격전망 CSI는 1년 뒤 집값이 오를 거라 보는 가구가 많을수록 100보다 커요. 금리가 내리고 CSI가 100을 넘어 오르면 매수세가 붙기 쉬워요.${m.missing?.length ? ` (못 받은 지표: ${esc(m.missing.join(', '))})` : ''}</p>
+      <h2>금리 · 주택가격 전망 심리 (전국) ${tip('한국은행 통계. 금리는 매수 여력, 주택가격전망 CSI는 1년 뒤 집값이 오를 거라 보는 가구가 많을수록 100보다 커요. 금리가 내리고 CSI가 100을 넘어 오르면 매수세가 붙기 쉬워요.')}</h2>
+      ${m.missing?.length ? `<p class="muted" style="margin:-6px 0 12px;font-size:12px">못 받은 지표: ${esc(m.missing.join(', '))}</p>` : ''}
       <div class="kpis">
         ${rates.map((x) => `<div class="kpi"><div class="label">${esc(x.name)}</div><div class="value num">${last(x)[1].toFixed(2)}%</div><div class="hint">${fmtYm(last(x)[0])} · 3개월 전 대비 ${chgPt(x)}</div></div>`).join('')}
         ${csi ? `<div class="kpi"><div class="label">주택가격전망 CSI</div><div class="value num">${last(csi)[1]}</div><div class="hint">${fmtYm(last(csi)[0])} · 3개월 전 대비 ${chgPt(csi, 3, '')}</div></div>` : ''}
@@ -826,7 +957,7 @@ async function viewRegion(code, id) {
   const opts = monthOpts(REGION_MONTHS);
   const months = getMonths(`region.${code}`, opts, Math.min(60, state.meta.months || 60));
   const brokerOnly = getKind() === 'broker';
-  showLoading(`<div class="crumb"><a href="#/g/${esc(region.group)}">${esc(region.group)}</a> ›</div><h1>${esc(region.name)}</h1><p class="muted">실거래 ${months}개월치 불러오는 중… (처음 보는 기간은 국토부 API 호출로 30초 정도 걸릴 수 있어요)</p>`);
+  showLoading(`<div class="crumb"><a href="#/g/${esc(region.group)}">${esc(region.group)}</a> ›</div><h1>${esc(region.name)}</h1>${skeleton(`실거래 ${months}개월치 불러오는 중… (처음 보는 기간은 국토부 API 호출로 30초 정도 걸릴 수 있어요)`)}`);
   const d = await getRegion(code, months, brokerOnly);
   if (isStale(id)) return;
   destroyCharts();
@@ -835,7 +966,7 @@ async function viewRegion(code, id) {
   app.innerHTML = `
     <div class="crumb"><a href="#/g/${esc(region.group)}">${esc(region.group)}</a> ›</div>
     <div class="row"><h1>${esc(region.name)}</h1>${phaseChip(ind.phase)}<span class="spacer"></span>${kindSeg(brokerOnly)}${monthsSeg(months, opts)}</div>
-    <p class="sub">평당가 = 전용면적 기준 거래가 ÷ 평 (중위값). 이동평균은 거래된 단지 구성이 달라 생기는 착시를 보정한 값이고, 최근 지표는 신고가 끝난 달까지로 계산해요. 통매각 같은 일괄 거래는 빼고 계산해요.</p>
+    <p class="lead">${regionLead(region.name.replace(/ \(.+\)/, ''), ind)} ${tip('평당가 = 전용면적 기준 거래가 ÷ 평 (중위값). 이동평균은 거래된 단지 구성이 달라 생기는 착시를 보정한 값이고, 최근 지표는 신고가 끝난 달까지로 계산해요. 통매각 같은 일괄 거래는 빼고 계산해요.')}</p>
     <div class="kpis">
       <div class="kpi"><div class="label">평당 매매가</div><div class="value num">${fmtMan(ind.current)}</div><div class="hint">${fmtYm(ind.currentYm)} 기준 · 84㎡ 환산 ${ind.current ? fmtEok(Math.round(ind.current * 84 / PYEONG / 100) * 100) : '–'}</div></div>
       <div class="kpi"><div class="label">3개월 변화</div><div class="value num">${delta(ind.chg3m)}</div><div class="hint">12개월 ${delta(ind.chg12m)}</div></div>
@@ -848,7 +979,7 @@ async function viewRegion(code, id) {
     ${ind.phase ? `<p class="phase-note card">${ind.phase.id ? `${ind.phase.id}국면 ` : ''}<b>${esc(ind.phase.name)}</b> — ${esc(ind.phase.note)}</p>` : ''}
     <div class="card">
       <div class="tv-head">
-        <div class="tv-label">평당 매매가 <span class="muted">3개월 이동평균 · 구성 보정</span></div>
+        <div class="tv-label">평당 매매가 <span class="muted">3개월 이동평균 · 구성 보정</span> ${tip('아래 칸은 월별 매매 거래량이고, 점선은 장기 평균(36개월 중위)이에요. 마지막 달(옅은 막대)은 신고 진행 중이라 덜 잡혀요. 노란 막대는 통매각 같은 일괄 거래로 지표 계산에서 뺐어요. 휠·핀치로 확대하고 끌어서 이동할 수 있어요.')}</div>
         <div class="tv-value num" id="pvValue"></div>
         <div class="tv-sub num" id="pvSub"></div>
       </div>
@@ -861,25 +992,23 @@ async function viewRegion(code, id) {
         </div>
       </div>
       <div class="tv-box" id="pv"></div>
-      <p class="muted tv-note">아래는 월별 매매 거래량 — 점선은 장기 평균 ${ind.volLong ?? '–'}건/월 (36개월 중위). 마지막 달(옅은 막대)은 신고 진행 중이라 덜 잡혀요.${s.some((r) => r.bulk) ? ' 노란 막대는 통매각 같은 일괄 거래로, 지표 계산에서 뺐어요.' : ''} 휠·핀치로 확대, 끌어서 이동.</p>
+      <p class="muted tv-note">아래 칸은 월별 매매 거래량 (점선 = 장기 평균 ${ind.volLong ?? '–'}건/월)${s.some((r) => r.bulk) ? ' · 노란 막대 = 일괄 거래(지표에서 제외)' : ''} · 휠·핀치로 확대</p>
     </div>
     <div class="grid2">
       <div class="card">
-        <h2>거래 온도</h2>
-        <p class="muted" style="margin:-6px 0 8px;font-size:12px">같은 단지·평형의 이전 거래와 비교 (3개월 이동평균). 신고가·상승 비율이 오르면 과열, 하락 비율이 상승 비율을 넘으면 꺾이는 신호예요.</p>
+        <h2>거래 온도 ${tip('같은 단지·평형의 이전 거래와 비교한 비율 (3개월 이동평균). 신고가·상승 비율이 오르면 과열, 하락 비율이 상승 비율을 넘으면 꺾이는 신호예요.')}</h2>
         ${legend([['신고가', css('--up')], ['직전보다 오름', css('--series-2')], ['직전보다 내림', css('--down')]])}
         <div class="chart-box short"><canvas id="heat"></canvas></div>
       </div>
       <div class="card">
-        <h2>전세가율 추이</h2>
-        <p class="muted" style="margin:-6px 0 8px;font-size:12px">평당 전세가 ÷ 평당 매매가 (3개월 이동평균). 오르면 매매가와 전세가의 갭이 좁아져 갭투자 수요가 들어오기 쉬워요.</p>
+        <h2>전세가율 추이 ${tip('평당 전세가 ÷ 평당 매매가 (3개월 이동평균). 오르면 매매가와 전세가의 갭이 좁아져 갭투자 수요가 들어오기 쉬워요.')}</h2>
         ${legend([['전세가율', css('--series-2')]])}
         <div class="chart-box short"><canvas id="jr"></canvas></div>
       </div>
     </div>
     <div class="card">
-      <div class="row" style="margin-bottom:8px"><h2 style="margin:0">단지별 시세</h2><span class="spacer"></span><input type="search" id="q" placeholder="단지명·동 검색"></div>
-      <div class="table-wrap"><table><thead></thead><tbody></tbody></table></div>
+      <div class="row" style="margin-bottom:8px"><h2 style="margin:0">단지별 시세</h2><span class="spacer"></span><span id="aptSort"></span><input type="search" id="q" placeholder="단지명·동 검색"></div>
+      <div class="table-wrap mcards"><table><thead></thead><tbody></tbody></table></div>
     </div>`;
   bindMonths(`region.${code}`);
   bindKind();
@@ -913,8 +1042,9 @@ async function viewRegion(code, id) {
     const term = q.value.trim();
     const rows = d.apartments.filter((r) => !term || r.apt.includes(term) || r.dong.includes(term));
     thead.innerHTML = tableHead(cols, 'apts', state.sort.apts);
+    document.getElementById('aptSort').innerHTML = sortSelect(cols, 'apts', state.sort.apts);
     tbody.innerHTML = sortRows(rows, cols, state.sort.apts).slice(0, 300)
-      .map((r) => `<tr class="link" data-href="#/a/${code}/${encodeURIComponent(r.key)}">${cols.map(([, , , f], i) => `<td class="${i < 2 ? 'l' : ''}">${f(r)}</td>`).join('')}</tr>`).join('');
+      .map((r) => `<tr class="link" data-href="#/a/${code}/${encodeURIComponent(r.key)}">${cells(cols, r, (i) => i < 2)}</tr>`).join('');
     bindSort(app, 'apts', render);
   };
   q.addEventListener('input', render);
@@ -936,7 +1066,7 @@ async function viewApt(code, key, id) {
   const region = requireRegion(code);
   const opts = monthOpts(APT_MONTHS);
   const months = getMonths(`apt.${code}.${key}`, opts, 36);
-  showLoading(`<div class="crumb"><a href="#/r/${code}">${esc(region.name)}</a> ›</div><p class="muted">불러오는 중… (처음 보는 기간은 30초 정도 걸릴 수 있어요)</p>`);
+  showLoading(`<div class="crumb"><a href="#/r/${code}">${esc(region.name)}</a> ›</div>${skeleton('불러오는 중… (처음 보는 기간은 30초 정도 걸릴 수 있어요)')}`);
   const d = await getApt(code, key, months);
   if (isStale(id)) return;
   destroyCharts();
@@ -1007,7 +1137,7 @@ async function viewApt(code, key, id) {
       </div>
       <div class="card">
         <div class="tv-head">
-          <div class="tv-label">${areaSel}㎡ 매매가 <span class="muted">6개월 이동평균</span></div>
+          <div class="tv-label">${areaSel}㎡ 매매가 <span class="muted">6개월 이동평균</span> ${tip('점 하나가 실거래 1건이고, 빨간 테두리는 신고가(같은 평형 이전 최고가를 넘은 거래)예요. 점을 누르면 그 거래가 기준이 되어 다른 거래·시점의 등락률을 보여줘요 (빈 곳을 누르면 해제). 월봉은 그 달 첫 거래→마지막 거래가 몸통, 최저~최고가 꼬리예요. 아래 칸은 월별 매매 건수. 1~3층을 끄면 점·월봉·건수에서만 빠지고 이동평균은 그대로예요.')}</div>
           <div class="tv-value num" id="apValue"></div>
           <div class="tv-sub num" id="apSub"></div>
         </div>
@@ -1021,7 +1151,7 @@ async function viewApt(code, key, id) {
           </div>
         </div>
         <div class="tv-box" id="ap"></div>
-        <p class="muted tv-note">점 하나가 실거래 1건 (<span class="up">빨간 테두리</span> = 신고가). 점을 누르면 그 거래가 기준이 되어 다른 거래·시점의 등락률을 보여줘요 (빈 곳을 누르면 해제). 월봉은 그 달 첫 거래→마지막 거래가 몸통, 최저~최고가 꼬리예요. 아래는 월별 매매 건수. 1~3층을 끄면 점·월봉·건수에서만 빠지고 이동평균은 그대로예요.</p>
+        <p class="muted tv-note">점을 누르면 그 거래 대비 등락률을 볼 수 있어요 · <span class="up">빨간 테두리</span> = 신고가</p>
       </div>
       <div class="grid2">
         <div class="card table-wrap"><h2>최근 매매</h2><table><thead><tr><th class="l">계약일</th><th>층</th><th>거래가</th><th>평당가</th><th class="l">유형</th></tr></thead><tbody>
@@ -1044,7 +1174,7 @@ async function viewWatch(id) {
     app.innerHTML = `<h1>관심단지</h1><div class="card muted">아직 관심단지가 없어요. 지역 화면의 단지 목록이나 단지 화면에서 ★를 눌러 추가하세요.</div>`;
     return;
   }
-  app.innerHTML = `<h1>관심단지</h1><p class="sub">주력 평형 기준. 눌러서 상세 보기. 지난번 확인 뒤 들어온 실거래는 '새 거래'로 표시돼요.</p><div class="watch-grid">${list.map((w, i) => `
+  app.innerHTML = `<h1>관심단지 ${tip("주력 평형 기준이에요. 눌러서 상세를 볼 수 있고, 지난번 확인 뒤 들어온 실거래는 '새 거래'로 표시돼요.")}</h1><div class="watch-grid">${list.map((w, i) => `
     <div class="card" data-href="#/a/${w.code}/${encodeURIComponent(w.key)}" id="w${i}">
       <div class="row"><b>${esc(w.name)}</b><span class="spacer"></span><span class="muted">${esc(w.region)}</span></div>
       <div class="muted">불러오는 중…</div>
@@ -1052,7 +1182,7 @@ async function viewWatch(id) {
     ${list.length > 1 ? `<div class="card" style="margin-top:16px">
       <div class="row" style="margin-bottom:8px"><h2 style="margin:0">단지 비교 — 주력 평형</h2><span class="spacer"></span>
         <div class="seg" id="cmpMode"><button data-m="ppy" class="on">평당가</button><button data-m="idx">상승률 (3년 전 = 100)</button></div></div>
-      <p class="muted" style="margin:0 0 8px;font-size:12px">6개월 이동평균. 평형이 달라도 비교할 수 있게 평당가로 맞췄어요.${list.length > CMP_MAX ? ` 처음 ${CMP_MAX}개 단지만 보여요.` : ''}</p>
+      <p class="muted" style="margin:0 0 8px;font-size:12px">6개월 이동평균 · 평형이 달라도 비교할 수 있게 평당가로 맞췄어요${list.length > CMP_MAX ? ` · 처음 ${CMP_MAX}개 단지만 보여요` : ''}</p>
       <div id="cmpLegend"></div>
       <div class="chart-box"><canvas id="cmp"></canvas></div>
     </div>` : ''}`;
