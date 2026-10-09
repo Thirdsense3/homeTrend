@@ -221,7 +221,7 @@ async function viewOverview(group, id) {
   regions.forEach((r) => { if (state.overview[r.code]?.error) delete state.overview[r.code]; });
   app.innerHTML = `
     <h1>${esc(group)} 지역별 시세 트렌드</h1>
-    <p class="sub">실거래 평당가(중위값)의 3개월 이동평균 기준. 지역을 누르면 단지별로 볼 수 있어요.</p>
+    <p class="sub">실거래 평당가의 3개월 이동평균 기준 (단지 구성 보정, 신고 진행 중인 지난달 제외). 지역을 누르면 단지별로 볼 수 있어요.</p>
     <div class="card">
       <h2>국면 지도 — 가격 변화 × 거래량 변화 (최근 3개월)</h2>
       <p class="muted" style="margin:-6px 0 10px;font-size:12px">벌집순환모형: 거래량이 먼저 움직이고 가격이 따라옵니다. 오른쪽 아래(불황)→가운데 오른쪽(회복진입)→오른쪽 위(회복) 순서로 옮겨가는 지역을 주목하세요.</p>
@@ -356,9 +356,9 @@ async function viewRegion(code, id) {
   app.innerHTML = `
     <div class="crumb"><a href="#/g/${esc(region.group)}">${esc(region.group)}</a> ›</div>
     <div class="row"><h1>${esc(region.name)}</h1>${phaseChip(ind.phase)}<span class="spacer"></span>${monthsSeg(months, opts)}</div>
-    <p class="sub">평당가 = 전용면적 기준 거래가 ÷ 평 (중위값). 최근 지표는 3개월 이동평균 기준.</p>
+    <p class="sub">평당가 = 전용면적 기준 거래가 ÷ 평 (중위값). 이동평균은 거래된 단지 구성이 달라 생기는 착시를 보정한 값이고, 최근 지표는 신고가 끝난 달까지로 계산해요.</p>
     <div class="kpis">
-      <div class="kpi"><div class="label">평당 매매가</div><div class="value num">${fmtMan(ind.current)}</div><div class="hint">84㎡ 환산 ${ind.current ? fmtEok(Math.round(ind.current * 84 / PYEONG / 100) * 100) : '–'}</div></div>
+      <div class="kpi"><div class="label">평당 매매가</div><div class="value num">${fmtMan(ind.current)}</div><div class="hint">${fmtYm(ind.currentYm)} 기준 · 84㎡ 환산 ${ind.current ? fmtEok(Math.round(ind.current * 84 / PYEONG / 100) * 100) : '–'}</div></div>
       <div class="kpi"><div class="label">3개월 변화</div><div class="value num">${delta(ind.chg3m)}</div><div class="hint">12개월 ${delta(ind.chg12m)}</div></div>
       <div class="kpi"><div class="label">기간 내 고점 대비</div><div class="value num">${delta(ind.fromPeak)}</div><div class="hint">고점 ${fmtYm(ind.peakYm)} · ${fmtMan(ind.peak)}</div></div>
       <div class="kpi"><div class="label">고점 이후 저점 대비</div><div class="value num">${delta(ind.fromLow)}</div><div class="hint">${ind.lowYm ? `저점 ${fmtYm(ind.lowYm)} · ${fmtMan(ind.low)}` : '현재가 고점'}</div></div>
@@ -368,7 +368,7 @@ async function viewRegion(code, id) {
     ${ind.phase ? `<p class="phase-note card">${ind.phase.id ? `${ind.phase.id}국면 ` : ''}<b>${esc(ind.phase.name)}</b> — ${esc(ind.phase.note)}</p>` : ''}
     <div class="card">
       <h2>평당 매매가 · 전세가 추이</h2>
-      ${legend([['매매 월 중위값', css('--series-1-soft'), true], ['매매 3개월 이동평균', css('--series-1')], ['전세 3개월 이동평균', css('--series-2')]])}
+      ${legend([['매매 월 중위값', css('--series-1-soft'), true], ['매매 3개월 이동평균 (구성 보정)', css('--series-1')], ['전세 3개월 이동평균 (구성 보정)', css('--series-2')]])}
       <div class="chart-box"><canvas id="price"></canvas></div>
     </div>
     <div class="card">

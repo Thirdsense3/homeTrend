@@ -53,3 +53,32 @@ test('apartmentList: 주력 평형 기준 최고가 대비', () => {
   assert.strictEqual(a.peakPrice, Math.round(6000 * 84 / PYEONG));
   assert.ok(Math.abs(a.fromPeak - (5400 / 6000 - 1)) < 0.001);
 });
+
+test('지표는 신고 진행 중인 마지막 달을 빼고 계산', () => {
+  // 마지막 달만 급등해도 지표에 반영되지 않는다
+  const rows = yms.flatMap((ym, i) => trades(ym, i === 11 ? 9000 : 5000, 10));
+  const ind = an.regionSummary(yms, rows, []).indicators;
+  assert.strictEqual(ind.currentYm, '202511');
+  assert.strictEqual(ind.chg3m, 0);
+  assert.strictEqual(ind.fromPeak, 0);
+});
+
+test('단지 구성 보정: 가격은 그대로인데 비싼 단지 거래만 늘면 변화 0', () => {
+  // A(평당 5000)·B(평당 10000) 가격 고정, 거래 비중이 A 위주 → B 위주로 바뀜
+  const rows = yms.flatMap((ym, i) => [...trades(ym, 5000, 12 - i, 'A'), ...trades(ym, 10000, i + 1, 'B')]);
+  const { series, indicators: ind } = an.regionSummary(yms, rows, []);
+  assert.ok(series[10].median > series[0].median * 1.5); // 원래 월 중위값은 크게 오름
+  assert.ok(Math.abs(series[10].ma / series[2].ma - 1) < 0.001); // 보정 이동평균은 그대로
+  assert.ok(Math.abs(ind.chg3m) < 0.001);
+});
+
+test('단지 구성 보정: 모든 단지가 10% 오르면 비중과 관계없이 10%', () => {
+  const ym2 = ['202501', '202502', '202503', '202504', '202505', '202506', '202507', '202508'];
+  const rows = ym2.flatMap((ym, i) => {
+    const up = i >= 4 ? 1.1 : 1;
+    return [...trades(ym, 5000 * up, i >= 4 ? 2 : 10, 'A'), ...trades(ym, 10000 * up, i >= 4 ? 10 : 2, 'B')];
+  });
+  const s = an.regionSummary(ym2, rows, []).series;
+  // 3개월 이동평균이 모두 상승 후 구간에 들어간 6월(idx 6) vs 상승 전 3월(idx 2)
+  assert.ok(Math.abs(s[6].ma / s[2].ma - 1.1) < 0.002);
+});
