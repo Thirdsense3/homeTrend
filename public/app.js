@@ -140,24 +140,24 @@ async function route() {
   const id = ++state.routeId;
   if (!state.keepView) destroyCharts(); // 기간 변경 중엔 기존 차트를 남겨두고, 새로 그릴 때 정리
   chartDefaults();
-  if (!state.meta) {
-    state.meta = await getMeta();
-    const live = (state.meta.source || state.meta.mode) === 'live';
-    const b = document.getElementById('mode');
-    b.textContent = live ? '국토부 실거래 데이터' : '데모 데이터 (실제 시세 아님)';
-    if (STATIC && state.meta.builtAt) {
-      const t = new Date(state.meta.builtAt);
-      b.textContent += ` · ${t.getMonth() + 1}/${t.getDate()} 갱신`;
-    }
-    b.className = 'badge' + (live ? '' : ' demo');
-  }
-  const parts = location.hash.replace(/^#\/?/, '').split('/').map(decodeURIComponent);
-  const view = parts[0];
-  const tab = view === 'r' || view === 'a' ? regionOf(parts[1])?.group
-    : view === 'watch' ? 'watch'
-    : view === 'g' && parts[1] ? parts[1] : '서울';
-  document.querySelectorAll('#tabs a').forEach((a) => a.classList.toggle('on', a.dataset.tab === tab));
   try {
+    if (!state.meta) {
+      state.meta = await getMeta();
+      const live = (state.meta.source || state.meta.mode) === 'live';
+      const b = document.getElementById('mode');
+      b.textContent = live ? '국토부 실거래 데이터' : '데모 데이터 (실제 시세 아님)';
+      if (STATIC && state.meta.builtAt) {
+        const t = new Date(state.meta.builtAt);
+        b.textContent += ` · ${t.getMonth() + 1}/${t.getDate()} 갱신`;
+      }
+      b.className = 'badge' + (live ? '' : ' demo');
+    }
+    const parts = location.hash.replace(/^#\/?/, '').split('/').map(decodeURIComponent);
+    const view = parts[0];
+    const tab = view === 'r' || view === 'a' ? regionOf(parts[1])?.group
+      : view === 'watch' ? 'watch'
+      : view === 'g' && parts[1] ? parts[1] : '서울';
+    document.querySelectorAll('#tabs a').forEach((a) => a.classList.toggle('on', a.dataset.tab === tab));
     if (view === 'r') await viewRegion(parts[1], id);
     else if (view === 'a') await viewApt(parts[1], parts.slice(2).join('/'), id);
     else if (view === 'watch') await viewWatch(id);
@@ -165,6 +165,7 @@ async function route() {
   } catch (e) {
     if (!isStale(id)) app.innerHTML = `<div class="card err">불러오지 못했습니다: ${esc(e.message)}</div>`;
   }
+  state.keepView = false; // 화면이 showLoading 전에 실패해도 다음 화면에 넘어가지 않게
   if (!isStale(id)) document.body.classList.remove('busy');
 }
 const regionOf = (code) => state.meta.regions.find((r) => r.code === code);
@@ -216,6 +217,8 @@ function bindSort(root, sortKey, rerender) {
 
 async function viewOverview(group, id) {
   const regions = state.meta.regions.filter((r) => r.group === group);
+  // 지난번에 실패한 지역은 다시 시도
+  regions.forEach((r) => { if (state.overview[r.code]?.error) delete state.overview[r.code]; });
   app.innerHTML = `
     <h1>${esc(group)} 지역별 시세 트렌드</h1>
     <p class="sub">실거래 평당가(중위값)의 3개월 이동평균 기준. 지역을 누르면 단지별로 볼 수 있어요.</p>
@@ -440,7 +443,8 @@ async function viewApt(code, key, id) {
   if (isStale(id)) return;
   destroyCharts();
   const { apt } = d;
-  let areaSel = state.aptArea?.[key] || d.areas[0].area;
+  const areaKey = `${code}:${key}`; // 다른 구에 같은 동·단지명이 있을 수 있어 지역 코드까지 포함
+  let areaSel = state.aptArea?.[areaKey] || d.areas[0].area;
   if (!d.areas.some((a) => a.area === areaSel)) areaSel = d.areas[0].area;
 
   const q = encodeURIComponent(`${region.name.replace(/ \(.+\)/, '')} ${apt.dong} ${apt.name}`);
@@ -466,7 +470,7 @@ async function viewApt(code, key, id) {
   });
   document.querySelectorAll('#areas button').forEach((b) => b.addEventListener('click', () => {
     areaSel = b.dataset.a;
-    state.aptArea = { ...(state.aptArea || {}), [key]: areaSel };
+    state.aptArea = { ...(state.aptArea || {}), [areaKey]: areaSel };
     document.querySelectorAll('#areas button').forEach((x) => x.classList.toggle('on', x === b));
     renderArea();
   }));
@@ -554,7 +558,7 @@ async function viewWatch(id) {
         <div class="row" style="font-size:12px;margin-top:6px">최고가 대비 ${delta(recent / A.maxPrice - 1)} · 전세가율 ${fmtPct(A.indicators.jeonseRatio, 0)}</div>
         <div style="margin-top:6px">${phaseChip(A.indicators.phase)}</div>`;
     } catch (e) {
-      el.querySelector('.muted:last-child').textContent = `오류: ${e.message}`;
+      el.querySelector(':scope > .muted').textContent = `오류: ${e.message}`;
     }
   }));
 }
