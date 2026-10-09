@@ -1,6 +1,6 @@
 /* homeTrend 프론트엔드 — 해시 라우팅 + Chart.js */
 const app = document.getElementById('app');
-const state = { meta: null, overview: {}, raw: {}, charts: [], sort: { overview: ['chg3m', -1], apts: ['count12m', -1] } };
+const state = { meta: null, overview: {}, raw: {}, charts: [], sort: { overview: ['chg3m', -1], apts: ['count12m', -1] }, pv: { median: true, jeonse: true } };
 // 정적 사이트(GitHub Pages): 빌드된 data/*.json을 읽는다. 로컬 서버: /api/* 를 호출한다
 const STATIC = !!window.HT_STATIC;
 const A = window.Analyze;
@@ -162,6 +162,120 @@ const endLabels = {
     ctx.restore();
   },
 };
+// ---------- 시계열 차트 (TradingView Lightweight Charts) ----------
+// 십자선·축 현재값·확대/이동이 기본 제공되는 금융 차트. 월 단위 데이터는 매달 1일 UTC 초로 넣는다
+const LWC = window.LightweightCharts;
+const ymSec = (ym) => Date.UTC(+ym.slice(0, 4), +ym.slice(4) - 1, 1) / 1000;
+const secLabel = (t) => tsLabel(t * 1000);
+// 축 눈금: 해가 바뀌는 곳은 연도, 나머지는 '4월'
+const secTick = (t, type) => { const d = new Date(t * 1000); return type === LWC.TickMarkType.Year ? `${d.getUTCFullYear()}` : `${d.getUTCMonth() + 1}월`; };
+const alpha = (hex, a) => { const n = parseInt(hex.slice(1), 16); return `rgba(${n >> 16}, ${(n >> 8) & 255}, ${n & 255}, ${a})`; };
+function tvChart(el) {
+  const line = { color: css('--axis'), labelBackgroundColor: css('--ink-2') };
+  const chart = LWC.createChart(el, {
+    autoSize: true,
+    layout: {
+      background: { type: 'solid', color: 'transparent' }, textColor: css('--muted'), fontSize: 12,
+      fontFamily: getComputedStyle(document.body).fontFamily, attributionLogo: false, // 출처는 바닥글에 표기
+      panes: { separatorColor: css('--grid'), separatorHoverColor: css('--accent-wash') },
+    },
+    grid: { vertLines: { visible: false }, horzLines: { color: css('--grid') } },
+    rightPriceScale: { borderVisible: false },
+    timeScale: { borderVisible: false, fixLeftEdge: true, fixRightEdge: true, lockVisibleTimeRangeOnResize: true, tickMarkFormatter: secTick },
+    crosshair: { mode: LWC.CrosshairMode.Magnet, vertLine: line, horzLine: line },
+    localization: { locale: 'ko-KR', timeFormatter: secLabel },
+    handleScroll: { vertTouchDrag: false }, // 모바일에서 세로로 쓸면 페이지가 스크롤되게
+  });
+  state.charts.push({ destroy: () => chart.remove() });
+  return chart;
+}
+
+// 지역 평당가 + 거래량. 토스증권처럼 위의 큰 숫자가 십자선을 따라 바뀌고,
+// 보이는 구간이 올랐으면 빨강·내렸으면 파랑, 구간 최고·최저를 표시한다
+function priceVolumeChart(s, ind) {
+  const chart = tvChart(document.getElementById('pv'));
+  const last = s.length - 1; // 신고 진행 중인 달: 이동평균은 그리지 않고(지표와 같은 기준) 거래량만 옅게
+  const ma = s.map((r, i) => (i < last ? r.ma : null));
+  const pt = (r, v) => (v == null ? { time: ymSec(r.ym) } : { time: ymSec(r.ym), value: v });
+  const manFmt = { type: 'custom', minMove: 1, formatter: fmtMan };
+  const price = chart.addSeries(LWC.AreaSeries, { lineWidth: 2, priceFormat: manFmt, priceLineStyle: LWC.LineStyle.Dotted, crosshairMarkerRadius: 4, crosshairMarkerBorderColor: css('--surface') });
+  price.setData(s.map((r, i) => pt(r, ma[i])));
+  const jeonse = chart.addSeries(LWC.LineSeries, { color: css('--series-2'), lineWidth: 2, priceFormat: manFmt, priceLineVisible: false, crosshairMarkerRadius: 3, visible: state.pv.jeonse });
+  jeonse.setData(s.map((r, i) => pt(r, i < last ? r.jeonseMa : null)));
+  const median = chart.addSeries(LWC.LineSeries, { color: css('--series-1-soft'), lineVisible: false, pointMarkersVisible: true, pointMarkersRadius: 2.5, priceFormat: manFmt, lastValueVisible: false, priceLineVisible: false, crosshairMarkerVisible: false, visible: state.pv.median });
+  median.setData(s.map((r) => pt(r, r.median)));
+
+  // 거래량 (아래 칸). 일괄 거래는 거래 막대 뒤에 합계 높이로 깔아 쌓인 것처럼 보이게
+  const volOpts = { priceFormat: { type: 'custom', minMove: 1, formatter: (v) => `${Math.round(v)}건` }, priceLineVisible: false, lastValueVisible: false };
+  const bulk = chart.addSeries(LWC.HistogramSeries, { ...volOpts, color: css('--series-4') }, 1);
+  bulk.setData(s.map((r) => (r.bulk ? { time: ymSec(r.ym), value: r.count + r.bulk } : { time: ymSec(r.ym) })));
+  const vol = chart.addSeries(LWC.HistogramSeries, { ...volOpts, color: css('--volume') }, 1);
+  vol.setData(s.map((r, i) => ({ time: ymSec(r.ym), value: r.count, ...(i === last ? { color: alpha(css('--volume'), 0.4) } : {}) })));
+  if (ind.volLong != null) vol.createPriceLine({ price: ind.volLong, color: css('--muted'), lineWidth: 1, lineStyle: LWC.LineStyle.Dashed, axisLabelVisible: true, title: '장기평균' });
+  chart.panes()[0].setStretchFactor(3);
+  chart.panes()[1].setStretchFactor(1);
+
+  // 보이는 구간: 이동평균이 있는 첫(a)·끝(b) 달. 큰 숫자의 등락률은 a 대비
+  const headValue = document.getElementById('pvValue'), headSub = document.getElementById('pvSub');
+  // 구간 최고·최저: 점 + 가로 점선, 값은 오른쪽 축에 (점 옆 글자는 차트 가장자리에서 잘린다)
+  const markers = LWC.createSeriesMarkers(price, []);
+  let extremes = [];
+  let a = ma.findIndex((v) => v != null), b = last - 1;
+  const showHead = (i) => {
+    const k = i ?? b, r = s[k], v = ma[k];
+    const chg = v != null && k > a ? v / ma[a] - 1 : null;
+    headValue.innerHTML = v != null ? fmtMan(v) : '<span class="muted">신고 진행 중</span>';
+    headSub.innerHTML = [
+      `<b>${fmtYm(r.ym)}</b>`,
+      chg != null ? `${delta(chg)} <span class="muted">${fmtYm(s[a].ym)} 대비</span>` : '',
+      state.pv.jeonse && k < last && r.jeonseMa != null ? `전세 ${fmtMan(r.jeonseMa)}` : '',
+      state.pv.median && r.median != null ? `월 중위 ${fmtMan(r.median)}` : '',
+      `거래 ${r.count}건${r.bulk ? ` (+일괄 ${r.bulk})` : ''}${k === last ? ' · 신고 진행 중' : ''}`,
+    ].filter(Boolean).map((x) => `<span>${x}</span>`).join('<span class="sep">·</span>');
+  };
+  const onRange = () => {
+    const lr = chart.timeScale().getVisibleLogicalRange();
+    const lo = Math.max(0, Math.ceil(lr?.from ?? 0)), hi = Math.min(last, Math.floor(lr?.to ?? last));
+    const idx = [];
+    for (let i = lo; i <= hi; i++) if (ma[i] != null) idx.push(i);
+    if (idx.length < 2) return;
+    [a, b] = [idx[0], idx[idx.length - 1]];
+    const c = css(ma[b] >= ma[a] ? '--up' : '--down');
+    price.applyOptions({ lineColor: c, topColor: alpha(c, 0.22), bottomColor: alpha(c, 0) });
+    let hiI = a, loI = a;
+    idx.forEach((i) => { if (ma[i] > ma[hiI]) hiI = i; if (ma[i] < ma[loI]) loI = i; });
+    const ext = hiI === loI ? [] : [[hiI, '최고', css('--up')], [loI, '최저', css('--down')]].sort((x, y) => x[0] - y[0]);
+    markers.setMarkers(ext.map(([i, , color]) => ({ time: ymSec(s[i].ym), position: 'inBar', shape: 'circle', color, size: 0.6 })));
+    extremes.forEach((l) => price.removePriceLine(l));
+    // 지금이 최고·최저면 축의 현재값 라벨과 겹치므로 선은 생략
+    extremes = ext.filter(([i]) => i !== b).map(([i, title, color]) => price.createPriceLine({ price: ma[i], color: alpha(color, 0.5), lineWidth: 1, lineStyle: LWC.LineStyle.Dotted, axisLabelVisible: true, title }));
+    showHead(null);
+  };
+  const byTime = new Map(s.map((r, i) => [ymSec(r.ym), i]));
+  chart.subscribeCrosshairMove((p) => showHead(p.time != null ? byTime.get(p.time) ?? null : null));
+  chart.timeScale().subscribeVisibleLogicalRangeChange(onRange);
+
+  // 기간 칩: 1년 = 마지막 완성월과 12개월 전을 비교. 전체 = 받아 온 기간
+  const setRange = (m) => {
+    if (!m) chart.timeScale().fitContent();
+    else chart.timeScale().setVisibleLogicalRange({ from: last - 1 - m - 0.5, to: last + 0.5 });
+  };
+  app.querySelectorAll('#pvRange button').forEach((btn) => btn.addEventListener('click', () => {
+    app.querySelectorAll('#pvRange button').forEach((x) => x.classList.toggle('on', x === btn));
+    setRange(Number(btn.dataset.r));
+  }));
+  const series = { median, jeonse };
+  app.querySelectorAll('#pvToggle button').forEach((btn) => btn.addEventListener('click', () => {
+    const k = btn.dataset.s;
+    state.pv[k] = !state.pv[k];
+    btn.classList.toggle('on', state.pv[k]);
+    series[k].applyOptions({ visible: state.pv[k] });
+    showHead(null);
+  }));
+  setRange(0);
+  onRange();
+}
+
 const legend = (items) => `<div class="legend">${items.map(([label, color, dot]) => `<span><i class="${dot ? 'dot' : ''}" style="background:${color}"></i>${label}</span>`).join('')}</div>`;
 
 // ---------- 라우터 ----------
@@ -544,15 +658,21 @@ async function viewRegion(code, id) {
     </div>
     ${ind.phase ? `<p class="phase-note card">${ind.phase.id ? `${ind.phase.id}국면 ` : ''}<b>${esc(ind.phase.name)}</b> — ${esc(ind.phase.note)}</p>` : ''}
     <div class="card">
-      <h2>평당 매매가 · 전세가 추이</h2>
-      ${legend([['매매 월 중위값', css('--series-1-soft'), true], ['매매 3개월 이동평균 (구성 보정)', css('--series-1')], ['전세 3개월 이동평균 (구성 보정)', css('--series-2')]])}
-      <div class="chart-box"><canvas id="price"></canvas></div>
-    </div>
-    <div class="card">
-      <h2>월별 매매 거래량</h2>
-      <p class="muted" style="margin:-6px 0 8px;font-size:12px">거래량은 가격보다 먼저 움직이는 경향이 있어요. 마지막 달(옅은 막대)은 신고 진행 중이라 덜 잡힙니다.${s.some((r) => r.bulk) ? ' 회색은 통매각 같은 일괄 거래로, 지표 계산에서 뺐어요.' : ''}</p>
-      ${legend([['거래', css('--series-1')], ...(s.some((r) => r.bulk) ? [['일괄 거래 (제외)', css('--axis')]] : []), [`장기 평균 ${ind.volLong ?? '–'}건/월 (36개월 중위)`, css('--muted')]])}
-      <div class="chart-box short"><canvas id="vol"></canvas></div>
+      <div class="tv-head">
+        <div class="tv-label">평당 매매가 <span class="muted">3개월 이동평균 · 구성 보정</span></div>
+        <div class="tv-value num" id="pvValue"></div>
+        <div class="tv-sub num" id="pvSub"></div>
+      </div>
+      <div class="row tv-ctrl">
+        <div class="seg" id="pvRange">${[[12, '1년'], [36, '3년'], [0, '전체']].filter(([m]) => m < s.length).map(([m, l]) => `<button data-r="${m}" class="${m === 0 ? 'on' : ''}">${l}</button>`).join('')}</div>
+        <span class="spacer"></span>
+        <div class="chips" id="pvToggle">
+          <button data-s="median" class="${state.pv.median ? 'on' : ''}"><i class="dot" style="background:${css('--series-1-soft')}"></i>월 중위값</button>
+          <button data-s="jeonse" class="${state.pv.jeonse ? 'on' : ''}"><i style="background:${css('--series-2')}"></i>전세</button>
+        </div>
+      </div>
+      <div class="tv-box" id="pv"></div>
+      <p class="muted tv-note">아래는 월별 매매 거래량 — 점선은 장기 평균 ${ind.volLong ?? '–'}건/월 (36개월 중위). 마지막 달(옅은 막대)은 신고 진행 중이라 덜 잡혀요.${s.some((r) => r.bulk) ? ' 노란 막대는 통매각 같은 일괄 거래로, 지표 계산에서 뺐어요.' : ''} 휠·핀치로 확대, 끌어서 이동.</p>
     </div>
     <div class="grid2">
       <div class="card">
@@ -575,39 +695,7 @@ async function viewRegion(code, id) {
   bindMonths(`region.${code}`);
   bindKind();
 
-  const labels = s.map((r) => fmtYm(r.ym));
-  makeChart(document.getElementById('price'), {
-    type: 'line',
-    data: {
-      labels,
-      datasets: [
-        { label: '매매 중위', data: s.map((r) => r.median), showLine: false, pointRadius: 2.5, pointBackgroundColor: css('--series-1-soft'), pointBorderWidth: 0 },
-        { label: '매매 3개월 평균', data: s.map((r) => r.ma), borderColor: css('--series-1'), borderWidth: 2, pointRadius: 0, tension: 0.25, spanGaps: true },
-        { label: '전세 3개월 평균', data: s.map((r) => r.jeonseMa), borderColor: css('--series-2'), borderWidth: 2, pointRadius: 0, tension: 0.25, spanGaps: true },
-      ],
-    },
-    options: {
-      interaction: { mode: 'index', intersect: false },
-      scales: { x: { grid: { display: false }, ticks: { maxTicksLimit: 10, maxRotation: 0 } }, y: { ticks: { callback: (v) => `${v.toLocaleString()}만` }, title: { display: true, text: '만원/평' } } },
-      plugins: { tooltip: { callbacks: { label: (c) => ` ${c.dataset.label}: ${fmtMan(c.raw)}` } } },
-    },
-  });
-  makeChart(document.getElementById('vol'), {
-    type: 'bar',
-    data: { labels, datasets: [
-      { label: '거래', data: s.map((r) => r.count), backgroundColor: s.map((_, i) => (i === s.length - 1 ? css('--series-1-soft') : css('--series-1'))), borderRadius: { topLeft: 3, topRight: 3 }, borderSkipped: 'bottom', barPercentage: 0.8, categoryPercentage: 0.9 },
-      { label: '일괄 거래 (제외)', data: s.map((r) => r.bulk || null), backgroundColor: css('--axis'), borderRadius: { topLeft: 3, topRight: 3 }, borderSkipped: 'bottom', barPercentage: 0.8, categoryPercentage: 0.9 },
-      { type: 'line', stack: 'avg', label: '장기 평균', data: s.map(() => ind.volLong), borderColor: css('--muted'), borderWidth: 1.5, borderDash: [4, 4], pointRadius: 0 },
-    ] },
-    options: {
-      scales: { x: { stacked: true, grid: { display: false }, ticks: { maxTicksLimit: 10, maxRotation: 0 } }, y: { stacked: true, ticks: { precision: 0 } } },
-      plugins: { tooltip: { callbacks: { label: (c) => [
-        ` ${c.raw}건${c.dataIndex === s.length - 1 ? ' (신고 진행 중)' : ''}`,
-        ` 일괄 거래 ${c.raw}건 (지표에서 제외)`,
-        ` 장기 평균 ${c.raw}건 (36개월 중위)`,
-      ][c.datasetIndex] } } },
-    },
-  });
+  priceVolumeChart(s, ind);
 
   const roll3 = (xs) => xs.map((_, i) => { const w = xs.slice(Math.max(0, i - 2), i + 1).filter((v) => v != null); return w.length === 3 ? w.reduce((a, b) => a + b) / 3 : null; });
   const done = s.slice(0, -1); // 신고 진행 중인 마지막 달 제외
