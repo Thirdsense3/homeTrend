@@ -90,15 +90,21 @@ const tsLabel = (v) => { const d = new Date(v); return `${String(d.getUTCFullYea
 const median = (xs) => { if (!xs.length) return null; const s = [...xs].sort((a, b) => a - b), m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
 const phaseChip = (p) => (p ? `<span class="phase" title="${esc(p.note)}"><b>${p.id ? `${p.id}국면 ` : ''}${esc(p.name)}</b><span class="muted">${esc(p.desc)}</span></span>` : '<span class="muted">–</span>');
 
-// 관심단지 (브라우저 저장)
+// 관심단지 (브라우저 저장). seen: 마지막으로 확인한 거래일 → 그 뒤 거래를 '새 거래'로 표시
 const watch = {
   list() { try { return JSON.parse(localStorage.getItem('homeTrend.watch')) || []; } catch (_) { return []; } },
+  save(l) { try { localStorage.setItem('homeTrend.watch', JSON.stringify(l)); } catch (_) { /* 저장 불가 */ } },
   has(code, key) { return this.list().some((w) => w.code === code && w.key === key); },
   toggle(item) {
     let l = this.list();
     l = this.has(item.code, item.key) ? l.filter((w) => !(w.code === item.code && w.key === item.key)) : [...l, item];
-    try { localStorage.setItem('homeTrend.watch', JSON.stringify(l)); } catch (_) { /* 저장 불가 */ }
+    this.save(l);
     return this.has(item.code, item.key);
+  },
+  markSeen(code, key, date) {
+    const l = this.list();
+    const w = l.find((x) => x.code === code && x.key === key);
+    if (w && date && !(w.seen >= date)) { w.seen = date; this.save(l); }
   },
 };
 
@@ -131,7 +137,13 @@ function makeChart(canvas, cfg) {
 }
 function destroyCharts() { state.charts.forEach((c) => c.destroy()); state.charts = []; }
 
-const timeAxis = { type: 'linear', grid: { display: false }, ticks: { callback: tsLabel, maxTicksLimit: 8, maxRotation: 0 } };
+// 거래가 몇 달 안에 몰린 단지도 눈금이 겹치지 않게: 최소 6개월 폭을 두고, 같은 달 눈금은 한 번만 쓴다
+const MIN_SPAN = 183 * 864e5;
+const timeAxis = {
+  type: 'linear', grid: { display: false },
+  ticks: { maxTicksLimit: 8, maxRotation: 0, callback: (v, i, ticks) => (i && tsLabel(ticks[i - 1].value) === tsLabel(v) ? '' : tsLabel(v)) },
+  afterDataLimits: (s) => { const pad = (MIN_SPAN - (s.max - s.min)) / 2; if (pad > 0) { s.min -= pad; s.max += pad; } },
+};
 const legend = (items) => `<div class="legend">${items.map(([label, color, dot]) => `<span><i class="${dot ? 'dot' : ''}" style="background:${color}"></i>${label}</span>`).join('')}</div>`;
 
 // ---------- 라우터 ----------
@@ -459,6 +471,7 @@ async function viewRegion(code, id) {
     <div class="card">
       <h2>월별 매매 거래량</h2>
       <p class="muted" style="margin:-6px 0 8px;font-size:12px">거래량은 가격보다 먼저 움직이는 경향이 있어요. 마지막 달(옅은 막대)은 신고 진행 중이라 덜 잡힙니다.${s.some((r) => r.bulk) ? ' 회색은 통매각 같은 일괄 거래로, 지표 계산에서 뺐어요.' : ''}</p>
+      ${legend([['거래', css('--series-1')], ...(s.some((r) => r.bulk) ? [['일괄 거래 (제외)', css('--axis')]] : []), [`장기 평균 ${ind.volLong ?? '–'}건/월 (36개월 중위)`, css('--muted')]])}
       <div class="chart-box short"><canvas id="vol"></canvas></div>
     </div>
     <div class="grid2">
@@ -504,10 +517,15 @@ async function viewRegion(code, id) {
     data: { labels, datasets: [
       { label: '거래', data: s.map((r) => r.count), backgroundColor: s.map((_, i) => (i === s.length - 1 ? css('--series-1-soft') : css('--series-1'))), borderRadius: { topLeft: 3, topRight: 3 }, borderSkipped: 'bottom', barPercentage: 0.8, categoryPercentage: 0.9 },
       { label: '일괄 거래 (제외)', data: s.map((r) => r.bulk || null), backgroundColor: css('--axis'), borderRadius: { topLeft: 3, topRight: 3 }, borderSkipped: 'bottom', barPercentage: 0.8, categoryPercentage: 0.9 },
+      { type: 'line', stack: 'avg', label: '장기 평균', data: s.map(() => ind.volLong), borderColor: css('--muted'), borderWidth: 1.5, borderDash: [4, 4], pointRadius: 0 },
     ] },
     options: {
       scales: { x: { stacked: true, grid: { display: false }, ticks: { maxTicksLimit: 10, maxRotation: 0 } }, y: { stacked: true, ticks: { precision: 0 } } },
-      plugins: { tooltip: { callbacks: { label: (c) => (c.datasetIndex ? ` 일괄 거래 ${c.raw}건 (지표에서 제외)` : ` ${c.raw}건${c.dataIndex === s.length - 1 ? ' (신고 진행 중)' : ''}`) } } },
+      plugins: { tooltip: { callbacks: { label: (c) => [
+        ` ${c.raw}건${c.dataIndex === s.length - 1 ? ' (신고 진행 중)' : ''}`,
+        ` 일괄 거래 ${c.raw}건 (지표에서 제외)`,
+        ` 장기 평균 ${c.raw}건 (36개월 중위)`,
+      ][c.datasetIndex] } } },
     },
   });
 
@@ -547,7 +565,7 @@ async function viewRegion(code, id) {
     const star = e.target.closest('.star');
     if (star) {
       const a = d.apartments.find((x) => x.key === star.dataset.key);
-      star.classList.toggle('on', watch.toggle({ code, key: a.key, name: a.apt, region: region.name }));
+      star.classList.toggle('on', watch.toggle({ code, key: a.key, name: a.apt, region: region.name, seen: a.lastDate }));
       return;
     }
     const tr = e.target.closest('tr[data-href]');
@@ -598,8 +616,10 @@ async function viewApt(code, key, id) {
       document.getElementById('copied').textContent = `'${apt.name}' 복사됨 — 검색창에 붙여넣으세요`;
     }, () => {});
   }));
+  const lastDate = d.trades[d.trades.length - 1].date;
+  watch.markSeen(code, key, lastDate); // 단지 화면을 열면 새 거래 표시를 지운다
   document.getElementById('star').addEventListener('click', (e) => {
-    e.target.classList.toggle('on', watch.toggle({ code, key, name: apt.name, region: region.name }));
+    e.target.classList.toggle('on', watch.toggle({ code, key, name: apt.name, region: region.name, seen: lastDate }));
   });
   document.querySelectorAll('#areas button').forEach((b) => b.addEventListener('click', () => {
     areaSel = b.dataset.a;
@@ -655,7 +675,7 @@ async function viewApt(code, key, id) {
         ],
       },
       options: {
-        scales: { x: timeAxis, y: { ticks: { callback: (v) => `${(v / 10000).toFixed(1)}억` } } },
+        scales: { x: timeAxis, y: { ticks: { callback: (v) => fmtEok(v) } } },
         plugins: { tooltip: { callbacks: {
           title: (items) => tsLabel(items[0].raw.x),
           label: (c) => (c.raw.t ? ` ${c.dataset.label} ${fmtEok(c.raw.y)} · ${c.raw.t.date.slice(5).replace('-', '/')} · ${c.raw.t.floor}층` : ` ${c.dataset.label} ${fmtEok(c.raw.y)}`),
@@ -673,12 +693,20 @@ async function viewWatch(id) {
     app.innerHTML = `<h1>관심단지</h1><div class="card muted">아직 관심단지가 없어요. 지역 화면의 단지 목록이나 단지 화면에서 ★를 눌러 추가하세요.</div>`;
     return;
   }
-  app.innerHTML = `<h1>관심단지</h1><p class="sub">주력 평형 기준. 눌러서 상세 보기.</p><div class="watch-grid">${list.map((w, i) => `
+  app.innerHTML = `<h1>관심단지</h1><p class="sub">주력 평형 기준. 눌러서 상세 보기. 지난번 확인 뒤 들어온 실거래는 '새 거래'로 표시돼요.</p><div class="watch-grid">${list.map((w, i) => `
     <div class="card" data-href="#/a/${w.code}/${encodeURIComponent(w.key)}" id="w${i}">
       <div class="row"><b>${esc(w.name)}</b><span class="spacer"></span><span class="muted">${esc(w.region)}</span></div>
       <div class="muted">불러오는 중…</div>
-    </div>`).join('')}</div>`;
+    </div>`).join('')}</div>
+    ${list.length > 1 ? `<div class="card" style="margin-top:16px">
+      <div class="row" style="margin-bottom:8px"><h2 style="margin:0">단지 비교 — 주력 평형</h2><span class="spacer"></span>
+        <div class="seg" id="cmpMode"><button data-m="ppy" class="on">평당가</button><button data-m="idx">상승률 (3년 전 = 100)</button></div></div>
+      <p class="muted" style="margin:0 0 8px;font-size:12px">6개월 이동평균. 평형이 달라도 비교할 수 있게 평당가로 맞췄어요.${list.length > CMP_MAX ? ` 처음 ${CMP_MAX}개 단지만 보여요.` : ''}</p>
+      <div id="cmpLegend"></div>
+      <div class="chart-box"><canvas id="cmp"></canvas></div>
+    </div>` : ''}`;
   app.querySelector('.watch-grid').addEventListener('click', (e) => { const c = e.target.closest('[data-href]'); if (c) location.hash = c.dataset.href; });
+  const cmp = [];
   await Promise.all(list.map(async (w, i) => {
     const el = document.getElementById(`w${i}`);
     try {
@@ -686,14 +714,74 @@ async function viewWatch(id) {
       const main = d.areas[0];
       const tr = d.trades.filter((t) => !t.bulk && String(Math.round(t.area)) === main.area);
       const recent = median(tr.slice(-3).map((t) => t.price));
+      // 새 거래: 지난번 확인한 거래일 이후. 처음 보는 단지(seen 없음)는 지금을 기준으로 삼는다
+      const market = d.trades.filter((t) => !t.bulk);
+      if (!w.seen) watch.markSeen(w.code, w.key, market[market.length - 1].date);
+      const fresh = w.seen ? market.filter((t) => t.date > w.seen) : [];
+      // 신고가: 같은 평형의 이전(확인 시점까지) 최고가를 넘은 새 거래. 이전 거래가 없는 평형은 세지 않는다
+      const high = fresh.filter((t) => {
+        const prior = market.filter((o) => o.date <= w.seen && Math.round(o.area) === Math.round(t.area)).map((o) => o.price);
+        return prior.length && t.price > Math.max(...prior);
+      });
+      const badges = `${fresh.length ? `<span class="tag new">새 거래 ${fresh.length}건</span>` : ''}${high.length ? `<span class="tag high">신고가 ${high.length}건</span>` : ''}`;
+      if (i < CMP_MAX) cmp[i] = { name: w.name, series: main.series.map((r) => ({ ym: r.ym, v: r.ma == null ? null : r.ma / (Number(main.area) / PYEONG) })) };
       el.innerHTML = `
-        <div class="row"><b>${esc(w.name)}</b><span class="spacer"></span><span class="muted">${esc(w.region)}</span></div>
+        <div class="row"><b>${esc(w.name)}</b>${badges}<span class="spacer"></span><span class="muted">${esc(w.region)}</span></div>
         <div class="row" style="margin-top:8px"><span class="num" style="font-size:20px;font-weight:600">${fmtEok(recent)}</span><span class="muted">${main.area}㎡</span><span class="spacer"></span>${sparkline(main.series.map((s) => s.ma), 100, 28)}</div>
         <div class="row" style="font-size:12px;margin-top:6px">최고가 대비 ${delta(recent / main.maxPrice - 1)} · 전세가율 ${fmtPct(main.indicators.jeonseRatio, 0)}</div>
         <div style="margin-top:6px">${phaseChip(main.indicators.phase)}</div>`;
     } catch (e) {
       el.querySelector(':scope > .muted').textContent = `오류: ${e.message}`;
     }
+  }));
+  if (isStale(id) || list.length < 2) return;
+  compareChart(cmp.filter(Boolean));
+}
+
+// 관심단지 비교: 단지마다 범주 색을 순서대로 고정 (최대 6개)
+const CMP_MAX = 6;
+function compareChart(items) {
+  const canvas = document.getElementById('cmp');
+  if (!canvas || items.length < 2) return;
+  const colors = items.map((_, i) => css(`--series-${i + 1}`));
+  document.getElementById('cmpLegend').innerHTML = legend(items.map((it, i) => [esc(it.name), colors[i]]));
+  const yms = items[0].series.map((r) => r.ym);
+  const data = (mode) => items.map((it) => {
+    const base = it.series.find((r) => r.v != null)?.v;
+    return it.series.map((r) => (r.v == null ? null : mode === 'idx' ? (r.v / base) * 100 : r.v));
+  });
+  let mode = 'ppy';
+  // 선 끝에 단지명을 직접 표시 (색만으로 구분하지 않게, 글자는 본문 색)
+  const endLabels = {
+    id: 'endLabels',
+    afterDatasetsDraw(c) {
+      const { ctx } = c;
+      ctx.save();
+      ctx.font = `12px ${Chart.defaults.font.family}`; ctx.fillStyle = css('--ink-2'); ctx.textBaseline = 'middle';
+      c.data.datasets.forEach((ds, i) => {
+        const pts = c.getDatasetMeta(i).data;
+        const j = ds.data.findLastIndex((v) => v != null);
+        if (j >= 0) ctx.fillText(ds.label, pts[j].x + 6, pts[j].y);
+      });
+      ctx.restore();
+    },
+  };
+  const chart = makeChart(canvas, {
+    type: 'line',
+    data: { labels: yms.map(fmtYm), datasets: items.map((it, i) => ({ label: it.name, data: data(mode)[i], borderColor: colors[i], backgroundColor: colors[i], borderWidth: 2, pointRadius: 0, tension: 0.25, spanGaps: true })) },
+    options: {
+      layout: { padding: { right: Math.min(160, 12 + Math.max(...items.map((it) => it.name.length)) * 12) } },
+      interaction: { mode: 'index', intersect: false },
+      scales: { x: { grid: { display: false }, ticks: { maxTicksLimit: 8, maxRotation: 0 } }, y: { ticks: { callback: (v) => (mode === 'idx' ? v : fmtMan(v)) } } },
+      plugins: { tooltip: { callbacks: { label: (c) => ` ${c.dataset.label}: ${c.raw == null ? '–' : mode === 'idx' ? c.raw.toFixed(1) : fmtMan(c.raw)}` } } },
+    },
+    plugins: [endLabels],
+  });
+  app.querySelectorAll('#cmpMode button').forEach((b) => b.addEventListener('click', () => {
+    mode = b.dataset.m;
+    app.querySelectorAll('#cmpMode button').forEach((x) => x.classList.toggle('on', x === b));
+    data(mode).forEach((d, i) => { chart.data.datasets[i].data = d; });
+    chart.update('none');
   }));
 }
 

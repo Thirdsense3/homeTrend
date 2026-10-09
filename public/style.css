@@ -11,6 +11,11 @@
   --series-1: #2a78d6;
   --series-1-soft: #9ec5f4;
   --series-2: #eb6834;
+  /* 단지 비교용 범주 색 3~6 (순서 고정) */
+  --series-3: #1baf7a;
+  --series-4: #eda100;
+  --series-5: #e87ba4;
+  --series-6: #008300;
   --up: #d03b3b;   /* 국내 관례: 상승 빨강 */
   --down: #256abf; /* 하락 파랑 */
   --accent-wash: rgba(42, 120, 214, 0.08);
@@ -29,6 +34,10 @@
     --series-1: #3987e5;
     --series-1-soft: #184f95;
     --series-2: #d95926;
+    --series-3: #199e70;
+    --series-4: #c98500;
+    --series-5: #d55181;
+    --series-6: #008300;
     --up: #e66767;
     --down: #6da7ec;
     --accent-wash: rgba(57, 135, 229, 0.14);
@@ -136,6 +145,8 @@ tbody tr.link:hover { background: var(--accent-wash); }
 
 .tag { display: inline-block; font-size: 11px; font-weight: 500; color: var(--muted); border: 1px solid var(--border); border-radius: 4px; padding: 0 5px; margin-left: 4px; vertical-align: 1px; }
 tr.muted td { color: var(--muted); }
+.tag.new { color: var(--ink); border-color: var(--series-1); }
+.tag.high { color: var(--up); border-color: var(--up); }
 
 .links a { margin-right: 12px; font-size: 13px; color: var(--series-1); }
 .err { color: var(--up); }
