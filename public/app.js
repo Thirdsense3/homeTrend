@@ -189,6 +189,8 @@ const OV_COLS = [
   ['chg12m', '12개월', (r) => r.ind?.chg12m, (r) => delta(r.ind?.chg12m)],
   ['fromPeak', '5년 고점 대비', (r) => r.ind?.fromPeak, (r) => (r.ind ? `${delta(r.ind.fromPeak)} <span class="muted">${fmtYm(r.ind.peakYm)}</span>` : '–')],
   ['volVsAvg', '거래량 (장기평균 대비)', (r) => r.ind?.volVsAvg, (r) => (r.ind ? `${r.ind.volRecent}건/월 ${delta(r.ind.volVsAvg, 0)}` : '–')],
+  ['newHighShare', '신고가 비율', (r) => r.ind?.newHighShare, (r) => fmtPct(r.ind?.newHighShare, 0)],
+  ['jeonseRatio', '전세가율', (r) => r.ind?.jeonseRatio, (r) => fmtPct(r.ind?.jeonseRatio, 0)],
   ['phase', '국면', (r) => r.ind?.phase?.id, (r) => (r.error ? `<span class="err" title="${esc(r.error)}">오류</span>` : r.ind ? phaseChip(r.ind.phase) : '<span class="muted">불러오는 중…</span>')],
   ['spark', '24개월 추이', null, (r) => (r.series ? sparkline(r.series.slice(-24).map((s) => s.ma)) : '')],
 ];
@@ -226,8 +228,9 @@ async function viewOverview(group, id) {
     <h1>${esc(group)} 지역별 시세 트렌드</h1>
     <p class="sub">실거래 평당가의 3개월 이동평균 기준 (단지 구성 보정, 신고 진행 중인 지난달·통매각 같은 일괄 거래 제외). 거래량은 최근 3개월을 36개월 평균과 비교해요. 지역을 누르면 단지별로 볼 수 있어요.</p>
     <div class="card">
-      <h2>국면 지도 — 가격 변화 × 거래량 (최근 3개월)</h2>
-      <p class="muted" style="margin:-6px 0 10px;font-size:12px">벌집순환모형: 거래량이 먼저 움직이고 가격이 따라옵니다. 오른쪽 아래(불황)→가운데 오른쪽(회복진입)→오른쪽 위(회복) 순서로 옮겨가는 지역을 주목하세요.</p>
+      <div class="row" style="margin-bottom:8px"><h2 style="margin:0">국면 지도 — 가격 변화 × 거래량 (최근 3개월)</h2><span class="spacer"></span><label class="muted" style="font-size:12px"><input type="checkbox" id="trail" ${state.trail ? 'checked' : ''}> 모든 지역 이동 경로</label></div>
+      <p class="muted" style="margin:0 0 10px;font-size:12px">벌집순환모형: 거래량이 먼저 움직이고 가격이 따라옵니다. 오른쪽 아래(불황)→가운데 오른쪽(회복진입)→오른쪽 위(회복) 순서로 옮겨가는 지역을 주목하세요. 점에 마우스를 올리면 6개월 전 → 3개월 전 → 지금 이동 경로가 보여요.</p>
+      <p class="muted" style="margin:-4px 0 10px;font-size:12px">신고가 비율: 최근 3개월 거래 중 같은 단지·평형의 이전 최고가를 넘은 거래 비중. 시장이 달아오르면 가장 먼저 올라가요.</p>
       <div class="chart-box tall"><canvas id="phaseMap"></canvas></div>
     </div>
     <div class="card table-wrap"><table><thead></thead><tbody></tbody></table></div>`;
@@ -244,10 +247,14 @@ async function viewOverview(group, id) {
 
   const map = phaseMap(document.getElementById('phaseMap'));
   const refreshMap = () => {
-    map.data.datasets[0].data = rows.filter((r) => r.ind?.chg3m != null && r.ind?.volVsAvg != null)
-      .map((r) => ({ x: r.ind.volVsAvg * 100, y: r.ind.chg3m * 100, label: r.name.replace(/ \(.+\)/, ''), code: r.code, phase: r.ind.phase }));
+    const pts = rows.filter((r) => r.ind?.chg3m != null && r.ind?.volVsAvg != null)
+      .map((r) => ({ x: r.ind.volVsAvg * 100, y: r.ind.chg3m * 100, label: r.name.replace(/ \(.+\)/, ''), code: r.code, phase: r.ind.phase,
+        trail: (r.ind.trail || []).map((t) => ({ x: t.volVsAvg * 100, y: t.chg3m * 100, ym: t.ym })) }));
+    map.data.datasets[0].data = pts;
+    map.data.datasets[1].data = state.trail ? pts.flatMap((p) => p.trail) : []; // 전체 경로를 볼 때만 축 범위에 넣는다
     map.update('none');
   };
+  document.getElementById('trail').addEventListener('change', (e) => { state.trail = e.target.checked; refreshMap(); });
   render(); refreshMap();
 
   let i = 0;
@@ -288,6 +295,27 @@ function phaseMap(canvas) {
       if (left && top) ctx.fillText('② 호황기 · 가격↑ 거래↓', a.left + 8, a.top + 16);
       if (left && bottom) ctx.fillText('④ 침체기 · 가격↓ 거래↓', a.left + 8, a.bottom - 8);
       ctx.restore();
+      // 이동 경로: 6개월 전 → 3개월 전 → 지금. 전체 보기가 아니면 마우스를 올린 지역만 (축 밖은 잘림)
+      ctx.save();
+      ctx.beginPath(); ctx.rect(a.left, a.top, a.right - a.left, a.bottom - a.top); ctx.clip();
+      ctx.strokeStyle = css('--series-1'); ctx.fillStyle = css('--series-1'); ctx.lineWidth = 1.5;
+      for (const p of c.data.datasets[0].data) {
+        const one = p.code === c.$hover;
+        if (!p.trail?.length || !(state.trail || one)) continue;
+        ctx.globalAlpha = one ? 0.9 : 0.3;
+        const px = [...p.trail, p].map((t) => [x.getPixelForValue(t.x), y.getPixelForValue(t.y)]);
+        ctx.beginPath();
+        px.forEach(([px1, py1], i) => ctx[i ? 'lineTo' : 'moveTo'](px1, py1));
+        ctx.stroke();
+        if (one) {
+          ctx.font = `11px ${Chart.defaults.font.family}`; ctx.textAlign = 'center';
+          p.trail.forEach((t, i) => {
+            ctx.beginPath(); ctx.arc(px[i][0], px[i][1], 3, 0, 7); ctx.fill();
+            ctx.fillText(fmtYm(t.ym), px[i][0], px[i][1] - 8);
+          });
+        }
+      }
+      ctx.restore();
     },
     // 이름표는 겹치지 않는 자리(오른쪽→왼쪽→위→아래)에만 놓고, 자리가 없으면 생략 (툴팁으로 확인)
     afterDatasetsDraw(c) {
@@ -320,15 +348,24 @@ function phaseMap(canvas) {
   };
   return makeChart(canvas, {
     type: 'scatter',
-    data: { datasets: [{ data: [], pointRadius: 5, pointHoverRadius: 7, backgroundColor: css('--series-1'), borderColor: css('--surface'), borderWidth: 2 }] },
+    data: { datasets: [
+      { data: [], pointRadius: 5, pointHoverRadius: 7, backgroundColor: css('--series-1'), borderColor: css('--surface'), borderWidth: 2 },
+      // 경로의 과거 위치 (축 범위 계산에도 포함)
+      { data: [], pointRadius: 2, pointHoverRadius: 2, backgroundColor: css('--series-1-soft'), borderWidth: 0 },
+    ] },
     options: {
       scales: {
         x: { title: { display: true, text: '거래량 (최근 3개월 vs 36개월 평균, %)' }, grid: { display: false }, afterDataLimits: fit(5, 10) },
         y: { title: { display: true, text: '가격 변화 (3개월, %)' }, afterDataLimits: fit(1, 2) },
       },
-      onClick: (e, els) => { if (els[0]) location.hash = `#/r/${e.chart.data.datasets[0].data[els[0].index].code}`; },
-      onHover: (e, els) => { e.native.target.style.cursor = els.length ? 'pointer' : 'default'; },
-      plugins: { tooltip: { callbacks: { label: (c) => [`${c.raw.label} · ${c.raw.phase?.name || ''}`, `가격 ${c.raw.y.toFixed(1)}% · 거래량 ${c.raw.x.toFixed(0)}%`] } } },
+      onClick: (e, els) => { if (els[0]?.datasetIndex === 0) location.hash = `#/r/${e.chart.data.datasets[0].data[els[0].index].code}`; },
+      onHover: (e, els) => {
+        const el = els.find((x) => x.datasetIndex === 0);
+        e.native.target.style.cursor = el ? 'pointer' : 'default';
+        const code = el ? e.chart.data.datasets[0].data[el.index].code : null;
+        if (code !== e.chart.$hover) { e.chart.$hover = code; e.chart.draw(); }
+      },
+      plugins: { tooltip: { filter: (i) => i.datasetIndex === 0, callbacks: { label: (c) => [`${c.raw.label} · ${c.raw.phase?.name || ''}`, `가격 ${c.raw.y.toFixed(1)}% · 거래량 ${c.raw.x.toFixed(0)}%`] } } },
     },
     plugins: [quadrants],
   });
@@ -411,6 +448,7 @@ async function viewRegion(code, id) {
       <div class="kpi"><div class="label">고점 이후 저점 대비</div><div class="value num">${delta(ind.fromLow)}</div><div class="hint">${ind.lowYm ? `저점 ${fmtYm(ind.lowYm)} · ${fmtMan(ind.low)}` : '현재가 고점'}</div></div>
       <div class="kpi"><div class="label">월 거래량 (최근 3개월)</div><div class="value num">${ind.volRecent ?? '–'}건</div><div class="hint">장기평균 ${delta(ind.volVsAvg, 0)} · 직전 3개월 ${delta(ind.volChg, 0)}${brokerOnly ? '' : ` · 직거래 ${fmtPct(ind.directShare, 0)}`}</div></div>
       <div class="kpi"><div class="label">전세가율 (최근 6개월)</div><div class="value num">${fmtPct(ind.jeonseRatio, 0)}</div><div class="hint">평당 전세가 ÷ 평당 매매가</div></div>
+      <div class="kpi"><div class="label">신고가 비율 (최근 3개월)</div><div class="value num">${fmtPct(ind.newHighShare, 0)}</div><div class="hint">직전 거래보다 ${ind.upShare != null ? `오름 ${fmtPct(ind.upShare, 0)} · 내림 ${fmtPct(ind.downShare, 0)}` : '–'}</div></div>
     </div>
     ${ind.phase ? `<p class="phase-note card">${ind.phase.id ? `${ind.phase.id}국면 ` : ''}<b>${esc(ind.phase.name)}</b> — ${esc(ind.phase.note)}</p>` : ''}
     <div class="card">
@@ -422,6 +460,20 @@ async function viewRegion(code, id) {
       <h2>월별 매매 거래량</h2>
       <p class="muted" style="margin:-6px 0 8px;font-size:12px">거래량은 가격보다 먼저 움직이는 경향이 있어요. 마지막 달(옅은 막대)은 신고 진행 중이라 덜 잡힙니다.${s.some((r) => r.bulk) ? ' 회색은 통매각 같은 일괄 거래로, 지표 계산에서 뺐어요.' : ''}</p>
       <div class="chart-box short"><canvas id="vol"></canvas></div>
+    </div>
+    <div class="grid2">
+      <div class="card">
+        <h2>거래 온도</h2>
+        <p class="muted" style="margin:-6px 0 8px;font-size:12px">같은 단지·평형의 이전 거래와 비교 (3개월 이동평균). 신고가·상승 비율이 오르면 과열, 하락 비율이 상승 비율을 넘으면 꺾이는 신호예요.</p>
+        ${legend([['신고가', css('--up')], ['직전보다 오름', css('--series-2')], ['직전보다 내림', css('--down')]])}
+        <div class="chart-box short"><canvas id="heat"></canvas></div>
+      </div>
+      <div class="card">
+        <h2>전세가율 추이</h2>
+        <p class="muted" style="margin:-6px 0 8px;font-size:12px">평당 전세가 ÷ 평당 매매가 (3개월 이동평균). 오르면 매매가와 전세가의 갭이 좁아져 갭투자 수요가 들어오기 쉬워요.</p>
+        ${legend([['전세가율', css('--series-2')]])}
+        <div class="chart-box short"><canvas id="jr"></canvas></div>
+      </div>
     </div>
     <div class="card">
       <div class="row" style="margin-bottom:8px"><h2 style="margin:0">단지별 시세</h2><span class="spacer"></span><input type="search" id="q" placeholder="단지명·동 검색"></div>
@@ -457,6 +509,27 @@ async function viewRegion(code, id) {
       scales: { x: { stacked: true, grid: { display: false }, ticks: { maxTicksLimit: 10, maxRotation: 0 } }, y: { stacked: true, ticks: { precision: 0 } } },
       plugins: { tooltip: { callbacks: { label: (c) => (c.datasetIndex ? ` 일괄 거래 ${c.raw}건 (지표에서 제외)` : ` ${c.raw}건${c.dataIndex === s.length - 1 ? ' (신고 진행 중)' : ''}`) } } },
     },
+  });
+
+  const roll3 = (xs) => xs.map((_, i) => { const w = xs.slice(Math.max(0, i - 2), i + 1).filter((v) => v != null); return w.length === 3 ? w.reduce((a, b) => a + b) / 3 : null; });
+  const done = s.slice(0, -1); // 신고 진행 중인 마지막 달 제외
+  const pctAxis = { ticks: { callback: (v) => `${Math.round(v * 100)}%` } };
+  const lineDs = (label, data, color) => ({ label, data, borderColor: color, borderWidth: 2, pointRadius: 0, tension: 0.25, spanGaps: true });
+  const lineOpts = { interaction: { mode: 'index', intersect: false }, scales: { x: { grid: { display: false }, ticks: { maxTicksLimit: 6, maxRotation: 0 } }, y: pctAxis },
+    plugins: { tooltip: { callbacks: { label: (c) => ` ${c.dataset.label} ${fmtPct(c.raw, 0)}` } } } };
+  makeChart(document.getElementById('heat'), {
+    type: 'line',
+    data: { labels: done.map((r) => fmtYm(r.ym)), datasets: [
+      lineDs('신고가', roll3(done.map((r) => r.newHigh)), css('--up')),
+      lineDs('직전보다 오름', roll3(done.map((r) => r.upShare)), css('--series-2')),
+      lineDs('직전보다 내림', roll3(done.map((r) => r.downShare)), css('--down')),
+    ] },
+    options: lineOpts,
+  });
+  makeChart(document.getElementById('jr'), {
+    type: 'line',
+    data: { labels: done.map((r) => fmtYm(r.ym)), datasets: [lineDs('전세가율', done.map((r) => (r.ma && r.jeonseMa ? r.jeonseMa / r.ma : null)), css('--series-2'))] },
+    options: lineOpts,
   });
 
   const thead = app.querySelector('thead'), tbody = app.querySelector('tbody'), q = document.getElementById('q');

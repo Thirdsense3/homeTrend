@@ -115,3 +115,30 @@ test('직거래 비율은 최근 3개 완성월 기준', () => {
   const rows = yms.flatMap((ym, i) => trades(ym, 5000, 10).map((r, j) => ({ ...r, kind: i >= 8 && j < 3 ? '직거래' : '중개거래' })));
   assert.strictEqual(an.regionSummary(yms, rows, []).indicators.directShare, 0.3);
 });
+
+test('거래 온도: 같은 단지·평형의 이전 거래 대비 신고가·상승·하락 비율', () => {
+  // 24개월. 매달 같은 단지 10건씩, 가격은 매달 1%씩 오르다 마지막 4개월(20~23)은 매달 1%씩 내림
+  const y24 = Array.from({ length: 24 }, (_, i) => `${2024 + Math.floor(i / 12)}${String(i % 12 + 1).padStart(2, '0')}`);
+  const rows = y24.flatMap((ym, i) => trades(ym, 5000 * (i < 20 ? 1 + 0.01 * i : 1.19 - 0.01 * (i - 19)), 10));
+  const { series, indicators: ind } = an.regionSummary(y24, rows, []);
+  assert.strictEqual(series[5].newHigh, null); // 처음 12개월은 비교 대상이 적어 비움
+  assert.strictEqual(series[15].newHigh, 0.1); // 오르는 달: 그 달 첫 거래만 신고가, 나머지 9건은 같은 값
+  assert.strictEqual(series[15].upShare, 0.1);
+  assert.strictEqual(ind.newHighShare, 0); // 최근 3개 완성월(20~22)은 하락 중
+  assert.strictEqual(ind.downShare, 0.1);
+});
+
+test('국면 지도 궤적: 3·6개월 전 시점의 위치', () => {
+  const rows = yms.flatMap((ym, i) => trades(ym, 5000 * (1 + 0.02 * i), 10));
+  const { indicators: ind } = an.regionSummary(yms, rows, []);
+  assert.deepStrictEqual(ind.trail.map((t) => t.ym), ['202505', '202508']); // 현재 202511 기준
+  assert.ok(ind.trail.every((t) => t.chg3m > 0));
+});
+
+test('같은 단지·같은 날 전세 10건 이상(공공임대 일괄 계약 등)은 지역 전세 시세에서 뺀다', () => {
+  const rows = yms.flatMap((ym) => trades(ym, 5000, 5));
+  const rents = rows.map((r) => ({ ...r, deposit: Math.round(r.price * 0.6), monthly: 0 }));
+  const bulk = Array.from({ length: 40 }, () => ({ dong: '동', apt: 'R', date: '2025-08-11', area: 84, deposit: 100, monthly: 0, floor: 3 }));
+  const ind = an.regionSummary(yms, rows, [...rents, ...bulk]).indicators;
+  assert.ok(Math.abs(ind.jeonseRatio - 0.6) < 0.001);
+});

@@ -17,12 +17,13 @@ const regionOf = (code) => regions.find((r) => r.code === code);
 const routes = [
   [/^\/api\/meta$/, async () => ({ mode: mode(), regions: regions.map(({ demoBase, ...r }) => r) })],
 
-  // 개요 테이블용: 매매만 조회 (호출 수 절약)
+  // 개요 테이블용
   [/^\/api\/overview\/(\d{5})$/, async ([code], q) => {
     if (!regionOf(code)) throw notFound();
     // 지표(고점·장기 평균 거래량)는 5년으로 계산하고, 시계열은 최근 25개월만 보낸다
-    const { yms, rows } = await getRange('trade', code, clampMonths(q.get('months'), 60));
-    const { series, indicators } = an.regionSummary(yms, rows, []);
+    const months = clampMonths(q.get('months'), 60);
+    const [{ yms, rows }, rent] = [await getRange('trade', code, months), await getRange('rent', code, months)];
+    const { series, indicators } = an.regionSummary(yms, rows, rent.rows);
     return { code, series: series.slice(-25).map(({ ym, ma, count }) => ({ ym, ma, count })), indicators };
   }],
 
