@@ -96,6 +96,11 @@ document.addEventListener('click', (e) => {
   document.querySelectorAll('.tip.open').forEach((x) => x !== t && x.classList.remove('open'));
   if (t) t.classList.toggle('open');
 });
+// 주제 조사: 마지막 한글 글자에 받침이 있으면 '은', 없으면 '는' (양평군은 / 강남구는)
+function topic(word) {
+  const c = [...String(word)].reverse().find((ch) => ch >= '가' && ch <= '힣');
+  return c && (c.charCodeAt(0) - 0xac00) % 28 ? '은' : '는';
+}
 // 숫자를 문장으로: '1.2% 올랐고' / '거의 그대로이고'
 const pctSpan = (x, d = 1) => `<span class="${x > 0 ? 'up' : 'down'}">${Math.abs(x * 100).toFixed(d)}%</span>`;
 function regionLead(name, ind) {
@@ -683,7 +688,7 @@ async function viewOverview(group, id) {
   regions.forEach((r) => { if (state.overview[r.code]?.error) delete state.overview[r.code]; });
   app.innerHTML = `
     <h1>${esc(group)} 지역별 시세 트렌드 ${tip('실거래 평당가의 3개월 이동평균 기준 (단지 구성 보정, 신고 진행 중인 지난달·통매각 같은 일괄 거래 제외). 거래량은 최근 3개월을 36개월 평균과 비교해요. 신고가 비율은 최근 3개월 거래 중 같은 단지·평형의 이전 최고가를 넘은 거래 비중으로, 시장이 달아오르면 가장 먼저 올라가요.')}</h1>
-    <p class="lead" id="ovLead">지역별 실거래를 불러오는 중이에요…</p>
+    <p class="lead" id="ovLead"></p>
     <div class="card">
       <div class="row" style="margin-bottom:8px"><h2 style="margin:0">국면 지도 — 가격 변화 × 거래량 ${tip('벌집순환모형: 거래량이 먼저 움직이고 가격이 따라와요. 오른쪽 아래(불황) → 가운데 오른쪽(회복진입) → 오른쪽 위(회복) 순서로 옮겨가는 지역을 주목하세요. 점에 마우스를 올리면 6개월 전 → 3개월 전 → 지금 이동 경로가 보이고, 누르면 지역 화면으로 가요.')}</h2><span class="spacer"></span><label class="muted" style="font-size:12px"><input type="checkbox" id="trail" ${state.trail ? 'checked' : ''}> 모든 지역 이동 경로</label></div>
       <div class="chart-box tall"><canvas id="phaseMap"></canvas></div>
@@ -700,14 +705,29 @@ async function viewOverview(group, id) {
     tbody.innerHTML = sortRows(rows, OV_COLS, state.sort.overview)
       .map((r) => `<tr class="link" data-href="#/r/${r.code}">${cells(OV_COLS, r, (i) => i === 0)}</tr>`).join('');
     bindSort(app, 'overview', render);
-    // 한 줄 요약: 3개월 새 오른 지역 수와 가장 많이 오른 곳
-    const ok = rows.filter((r) => r.ind?.chg3m != null);
-    if (ok.length) {
-      const up = ok.filter((r) => r.ind.chg3m > 0.003).length, down = ok.filter((r) => r.ind.chg3m < -0.003).length;
-      const best = ok.reduce((a, b) => (b.ind.chg3m > a.ind.chg3m ? b : a));
-      const hot = ok.filter((r) => r.ind.volVsAvg > 0.2).length;
-      document.getElementById('ovLead').innerHTML = `최근 3개월 ${esc(group)} ${ok.length}개 지역 중 ${up ? `<span class="up">${up}곳이 올랐고</span>` : '오른 곳은 없고'} ${down ? `<span class="down">${down}곳이 내렸어요</span>` : '내린 곳은 없어요'}. 가장 많이 오른 곳은 <a href="#/r/${best.code}">${esc(best.name)}</a>(${delta(best.ind.chg3m)})이고, 거래량이 장기 평균보다 20% 넘게 늘어난 곳은 ${hot}곳이에요.${ok.length < rows.length ? ` <span class="muted">(${rows.length - ok.length}곳 불러오는 중)</span>` : ''}`;
+    // 한 줄 요약: 3개월 새 오른 지역 수와 가장 많이 오른 곳.
+    // 지역이 하나씩 들어올 때마다 숫자가 바뀌면 오류처럼 보이므로, 다 불러온 뒤에 한 번만 문장을 정한다
+    const lead = document.getElementById('ovLead');
+    const pending = rows.filter((r) => !r.ind && !r.error).length;
+    if (pending) {
+      const done = rows.length - pending;
+      lead.innerHTML = `<span class="muted">${esc(group)} ${rows.length}개 지역의 실거래를 불러오는 중이에요 · ${done}/${rows.length}</span><span class="lead-progress"><i style="width:${(done / rows.length) * 100}%"></i></span>`;
+      return;
     }
+    const ok = rows.filter((r) => r.ind?.chg3m != null);
+    // 빠진 지역은 3곳까지 이름으로, 그보다 많으면 개수로 밝힌다
+    const failed = rows.filter((r) => r.error), thin = rows.filter((r) => r.ind && r.ind.chg3m == null);
+    const who = (rs) => (rs.length <= 3 ? `${rs.map((r) => esc(r.name)).join('·')}${topic(rs[rs.length - 1].name)}` : `${rs.length}곳은`);
+    const notes = [failed.length ? `${who(failed)} 불러오지 못해 빼고 계산했어요` : '', thin.length ? `${who(thin)} 거래가 적어 뺐어요` : ''].filter(Boolean);
+    const note = notes.length ? ` <span class="muted">(${notes.join(' · ')})</span>` : '';
+    if (!ok.length) {
+      lead.innerHTML = `<span class="err">지역 데이터를 불러오지 못했어요. 잠시 뒤 새로고침해 주세요.</span>${note}`;
+      return;
+    }
+    const up = ok.filter((r) => r.ind.chg3m > 0.003).length, down = ok.filter((r) => r.ind.chg3m < -0.003).length;
+    const best = ok.reduce((a, b) => (b.ind.chg3m > a.ind.chg3m ? b : a));
+    const hot = ok.filter((r) => r.ind.volVsAvg > 0.2).length;
+    lead.innerHTML = `최근 3개월 ${esc(group)} ${ok.length}개 지역 중 ${up ? `<span class="up">${up}곳이 올랐고</span>` : '오른 곳은 없고'} ${down ? `<span class="down">${down}곳이 내렸어요</span>` : '내린 곳은 없어요'}. 가장 많이 오른 곳은 <a href="#/r/${best.code}">${esc(best.name)}</a>(${delta(best.ind.chg3m)})이고, 거래량이 장기 평균보다 20% 넘게 늘어난 곳은 ${hot}곳이에요.${note}`;
   };
   tbody.addEventListener('click', (e) => { const tr = e.target.closest('tr[data-href]'); if (tr) location.hash = tr.dataset.href; });
 
