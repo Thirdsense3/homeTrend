@@ -474,7 +474,11 @@ async function viewApt(code, key, id) {
   let areaSel = state.aptArea?.[areaKey] || d.areas[0].area;
   if (!d.areas.some((a) => a.area === areaSel)) areaSel = d.areas[0].area;
 
-  const q = encodeURIComponent(`${region.name.replace(/ \(.+\)/, '')} ${apt.dong} ${apt.name}`);
+  // 네이버는 통합검색의 부동산 박스(매물 수·호가)가 가장 확실하고, 호갱노노는 단지명 검색을 URL로 받는다.
+  // KB·국토부는 검색어를 URL로 넘길 수 없어 클릭할 때 단지명을 복사해 붙여넣게 한다
+  const regionName = region.name.replace(/ \(.+\)/, '');
+  const naverQ = encodeURIComponent(`${regionName} ${apt.name} 아파트`);
+  const hogangQ = encodeURIComponent(apt.name);
   app.innerHTML = `
     <div class="crumb"><a href="#/g/${esc(region.group)}">${esc(region.group)}</a> › <a href="#/r/${code}">${esc(region.name)}</a> ›</div>
     <div class="row">
@@ -484,14 +488,20 @@ async function viewApt(code, key, id) {
       <span class="spacer"></span>${monthsSeg(months, opts)}
     </div>
     <p class="links">현재 매물·호가 확인 →
-      <a href="https://m.land.naver.com/search/result/${q}" target="_blank" rel="noopener">네이버부동산</a>
-      <a href="https://hogangnono.com/" target="_blank" rel="noopener">호갱노노</a>
-      <a href="https://kbland.kr/" target="_blank" rel="noopener">KB부동산</a>
-      <a href="https://rt.molit.go.kr/" target="_blank" rel="noopener">국토부 실거래가</a>
+      <a href="https://search.naver.com/search.naver?query=${naverQ}" target="_blank" rel="noopener">네이버부동산</a>
+      <a href="https://hogangnono.com/search?q=${hogangQ}" target="_blank" rel="noopener">호갱노노</a>
+      <a href="https://kbland.kr/" target="_blank" rel="noopener" class="copy-name" title="단지명이 복사돼요. 검색창에 붙여넣으세요">KB부동산</a>
+      <a href="https://rt.molit.go.kr/" target="_blank" rel="noopener" class="copy-name" title="단지명이 복사돼요. 검색창에 붙여넣으세요">국토부 실거래가</a>
+      <span class="muted" id="copied" style="font-size:12px"></span>
     </p>
     <div class="row" style="margin-bottom:16px"><span class="muted">전용면적</span><div class="seg" id="areas">${d.areas.map((a) => `<button data-a="${a.area}" class="${a.area === areaSel ? 'on' : ''}">${a.area}㎡ <span class="muted">(${a.count})</span></button>`).join('')}</div></div>
     <div id="areaView"></div>`;
   bindMonths(`apt.${code}.${key}`);
+  app.querySelectorAll('.copy-name').forEach((a) => a.addEventListener('click', () => {
+    navigator.clipboard?.writeText(apt.name).then(() => {
+      document.getElementById('copied').textContent = `'${apt.name}' 복사됨 — 검색창에 붙여넣으세요`;
+    }, () => {});
+  }));
   document.getElementById('star').addEventListener('click', (e) => {
     e.target.classList.toggle('on', watch.toggle({ code, key, name: apt.name, region: region.name }));
   });
