@@ -82,3 +82,36 @@ test('단지 구성 보정: 모든 단지가 10% 오르면 비중과 관계없�
   // 3개월 이동평균이 모두 상승 후 구간에 들어간 6월(idx 6) vs 상승 전 3월(idx 2)
   assert.ok(Math.abs(s[6].ma / s[2].ma - 1.1) < 0.002);
 });
+
+test('같은 단지·같은 날 직거래 10건 이상은 일괄 거래로 보고 시세·거래량에서 뺀다', () => {
+  const rows = yms.flatMap((ym) => trades(ym, 5000, 10));
+  // 7월에 다른 단지가 평당 2만으로 30건 일괄 직거래
+  const bulk = Array.from({ length: 30 }, () => ({ dong: '동', apt: 'B', date: '2025-07-09', area: 18, price: 27000, floor: 20, kind: '직거래' }));
+  const { series, indicators: ind } = an.regionSummary(yms, [...rows, ...bulk], []);
+  assert.strictEqual(series[6].count, 10);
+  assert.strictEqual(series[6].bulk, 30);
+  assert.strictEqual(ind.chg3m, 0);
+  const list = an.apartmentList([...rows, ...bulk]);
+  assert.deepStrictEqual(list.map((a) => a.key), ['동|A']); // 일괄 거래만 있는 단지는 목록에서 빠짐
+});
+
+test('일괄 거래 기준 미만이거나 중개거래면 그대로 둔다', () => {
+  const r = (n, kind) => Array.from({ length: n }, () => ({ dong: '동', apt: 'A', date: '2025-07-09', kind }));
+  assert.ok(an.markBulk(r(9, '직거래')).every((x) => !x.bulk));
+  assert.ok(an.markBulk(r(30, '중개거래')).every((x) => !x.bulk));
+  assert.ok(an.markBulk(r(10, '직거래')).every((x) => x.bulk));
+});
+
+test('국면의 거래량은 장기(36개월 중위) 대비: 직전 3개월에 거래가 몰렸어도 평소 수준이면 거래↓로 보지 않는다', () => {
+  // 40개월. 마지막 달(39)은 제외 → 최근 3개월 36~38은 평소(10건), 직전 3개월 33~35만 급증, 가격은 상승
+  const ym40 = Array.from({ length: 40 }, (_, i) => `${2023 + Math.floor(i / 12)}${String(i % 12 + 1).padStart(2, '0')}`);
+  const rows = ym40.flatMap((ym, i) => trades(ym, 5000 * (1 + 0.01 * i), i >= 33 && i <= 35 ? 40 : 10));
+  const ind = an.regionSummary(ym40, rows, []).indicators;
+  assert.ok(ind.volChg < -0.5); // 직전 3개월 대비로는 크게 감소
+  assert.ok(Math.abs(ind.volVsAvg) < 0.15); // 장기 기준으로는 평소 수준
+});
+
+test('직거래 비율은 최근 3개 완성월 기준', () => {
+  const rows = yms.flatMap((ym, i) => trades(ym, 5000, 10).map((r, j) => ({ ...r, kind: i >= 8 && j < 3 ? '직거래' : '중개거래' })));
+  assert.strictEqual(an.regionSummary(yms, rows, []).indicators.directShare, 0.3);
+});
