@@ -477,8 +477,8 @@ async function viewApt(code, key, id) {
 
   function renderArea() {
     destroyCharts();
-    const A = d.areas.find((a) => a.area === areaSel);
-    const ind = A.indicators;
+    const sel = d.areas.find((a) => a.area === areaSel);
+    const ind = sel.indicators;
     const trades = d.trades.filter((t) => String(Math.round(t.area)) === areaSel);
     const jeonse = d.rents.filter((t) => String(Math.round(t.area)) === areaSel && t.monthly === 0);
     const recent = median(trades.slice(-3).map((t) => t.price));
@@ -516,8 +516,8 @@ async function viewApt(code, key, id) {
         datasets: [
           { label: '전세', data: jeonse.map((t) => ({ x: Date.parse(t.date), y: t.deposit, t })), ...dot(css('--series-2')) },
           { label: '매매', data: trades.map((t) => ({ x: Date.parse(t.date), y: t.price, t })), ...dot(css('--series-1')) },
-          { label: '전세 이동평균', data: A.series.filter((r) => r.jeonseMa != null).map((r) => ({ x: ymTs(r.ym), y: r.jeonseMa })), ...line(css('--series-2')) },
-          { label: '매매 이동평균', data: A.series.filter((r) => r.ma != null).map((r) => ({ x: ymTs(r.ym), y: r.ma })), ...line(css('--series-1')) },
+          { label: '전세 이동평균', data: sel.series.filter((r) => r.jeonseMa != null).map((r) => ({ x: ymTs(r.ym), y: r.jeonseMa })), ...line(css('--series-2')) },
+          { label: '매매 이동평균', data: sel.series.filter((r) => r.ma != null).map((r) => ({ x: ymTs(r.ym), y: r.ma })), ...line(css('--series-1')) },
         ],
       },
       options: {
@@ -549,14 +549,14 @@ async function viewWatch(id) {
     const el = document.getElementById(`w${i}`);
     try {
       const d = await getApt(w.code, w.key, 36);
-      const A = d.areas[0];
-      const tr = d.trades.filter((t) => String(Math.round(t.area)) === A.area);
+      const main = d.areas[0];
+      const tr = d.trades.filter((t) => String(Math.round(t.area)) === main.area);
       const recent = median(tr.slice(-3).map((t) => t.price));
       el.innerHTML = `
         <div class="row"><b>${esc(w.name)}</b><span class="spacer"></span><span class="muted">${esc(w.region)}</span></div>
-        <div class="row" style="margin-top:8px"><span class="num" style="font-size:20px;font-weight:600">${fmtEok(recent)}</span><span class="muted">${A.area}㎡</span><span class="spacer"></span>${sparkline(A.series.map((s) => s.ma), 100, 28)}</div>
-        <div class="row" style="font-size:12px;margin-top:6px">최고가 대비 ${delta(recent / A.maxPrice - 1)} · 전세가율 ${fmtPct(A.indicators.jeonseRatio, 0)}</div>
-        <div style="margin-top:6px">${phaseChip(A.indicators.phase)}</div>`;
+        <div class="row" style="margin-top:8px"><span class="num" style="font-size:20px;font-weight:600">${fmtEok(recent)}</span><span class="muted">${main.area}㎡</span><span class="spacer"></span>${sparkline(main.series.map((s) => s.ma), 100, 28)}</div>
+        <div class="row" style="font-size:12px;margin-top:6px">최고가 대비 ${delta(recent / main.maxPrice - 1)} · 전세가율 ${fmtPct(main.indicators.jeonseRatio, 0)}</div>
+        <div style="margin-top:6px">${phaseChip(main.indicators.phase)}</div>`;
     } catch (e) {
       el.querySelector(':scope > .muted').textContent = `오류: ${e.message}`;
     }

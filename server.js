@@ -45,7 +45,7 @@ function serveStatic(res, pathname) {
   const file = pathname === '/analyze.js'
     ? path.join(__dirname, 'lib', 'analyze.js')
     : path.normalize(path.join(PUBLIC, pathname === '/' ? 'index.html' : pathname));
-  if ((pathname !== '/analyze.js' && !file.startsWith(PUBLIC)) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) {
+  if ((pathname !== '/analyze.js' && !file.startsWith(PUBLIC + path.sep)) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) {
     res.writeHead(404).end('not found');
     return;
   }
