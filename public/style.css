@@ -18,6 +18,7 @@
   --series-6: #008300;
   --up: #d03b3b;   /* 국내 관례: 상승 빨강 */
   --down: #256abf; /* 하락 파랑 */
+  --volume: #c9c8bf;
   --accent-wash: rgba(42, 120, 214, 0.08);
 }
 @media (prefers-color-scheme: dark) {
@@ -40,6 +41,7 @@
     --series-6: #008300;
     --up: #e66767;
     --down: #6da7ec;
+    --volume: #4f4e4a;
     --accent-wash: rgba(57, 135, 229, 0.14);
   }
 }
@@ -171,3 +173,28 @@ body.busy .top::after {
 }
 @keyframes busy { from { left: -30%; } to { left: 100%; } }
 @media (prefers-reduced-motion: reduce) { body.busy .top::after { animation: none; width: 100%; } }
+
+/* 시계열 차트 (토스증권 스타일 헤더) */
+.tv-label { font-size: 13px; color: var(--ink-2); }
+.tv-label .muted { font-size: 12px; margin-left: 4px; }
+.tv-value { font-size: 28px; font-weight: 700; letter-spacing: -0.02em; line-height: 1.25; }
+.tv-sub { font-size: 13px; color: var(--ink-2); min-height: 20px; }
+.tv-sub > span { white-space: nowrap; }
+.tv-sub .sep { margin: 0 6px; color: var(--axis); }
+.tv-ctrl { margin: 12px 0 8px; gap: 8px; }
+.tv-box { position: relative; height: 440px; }
+.tv-note { font-size: 12px; margin: 8px 0 0; }
+.chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.chips button {
+  display: inline-flex; align-items: center; gap: 6px; cursor: pointer;
+  border: 1px solid var(--border); border-radius: 999px; background: transparent;
+  color: var(--muted); padding: 4px 10px; font: inherit; font-size: 12px;
+}
+.chips button.on { color: var(--ink); border-color: var(--axis); }
+.chips i { display: inline-block; width: 12px; height: 3px; border-radius: 2px; }
+.chips i.dot { width: 8px; height: 8px; border-radius: 50%; }
+.chips button:not(.on) i { opacity: 0.3; }
+@media (max-width: 720px) {
+  .tv-value { font-size: 24px; }
+  .tv-box { height: 360px; }
+}
