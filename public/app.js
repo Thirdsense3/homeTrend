@@ -275,26 +275,53 @@ function phaseMap(canvas) {
       const x0 = x.getPixelForValue(0), y0 = y.getPixelForValue(0);
       ctx.beginPath(); ctx.moveTo(x0, a.top); ctx.lineTo(x0, a.bottom); ctx.moveTo(a.left, y0); ctx.lineTo(a.right, y0); ctx.stroke();
       ctx.fillStyle = css('--muted'); ctx.font = `12px ${Chart.defaults.font.family}`;
-      ctx.textAlign = 'right'; ctx.fillText('① 회복기 · 가격↑ 거래↑', a.right - 8, a.top + 16); ctx.fillText('⑤ 불황기 · 가격↓ 거래↑', a.right - 8, a.bottom - 8);
-      ctx.textAlign = 'left'; ctx.fillText('② 호황기 · 가격↑ 거래↓', a.left + 8, a.top + 16); ctx.fillText('④ 침체기 · 가격↓ 거래↓', a.left + 8, a.bottom - 8);
+      // 축이 데이터에 맞춰 잘리므로, 화면에 충분히 보이는 사분면에만 이름을 쓴다
+      const wide = (px) => px > 160, tall = (px) => px > 40;
+      const [right, left, top, bottom] = [wide(a.right - x0), wide(x0 - a.left), tall(y0 - a.top), tall(a.bottom - y0)];
+      ctx.textAlign = 'right';
+      if (right && top) ctx.fillText('① 회복기 · 가격↑ 거래↑', a.right - 8, a.top + 16);
+      if (right && bottom) ctx.fillText('⑤ 불황기 · 가격↓ 거래↑', a.right - 8, a.bottom - 8);
+      ctx.textAlign = 'left';
+      if (left && top) ctx.fillText('② 호황기 · 가격↑ 거래↓', a.left + 8, a.top + 16);
+      if (left && bottom) ctx.fillText('④ 침체기 · 가격↓ 거래↓', a.left + 8, a.bottom - 8);
       ctx.restore();
     },
+    // 이름표는 겹치지 않는 자리(오른쪽→왼쪽→위→아래)에만 놓고, 자리가 없으면 생략 (툴팁으로 확인)
     afterDatasetsDraw(c) {
-      const { ctx } = c;
+      const { ctx, chartArea: a } = c;
       ctx.save();
-      ctx.fillStyle = css('--ink-2'); ctx.font = `12px ${Chart.defaults.font.family}`; ctx.textBaseline = 'middle';
-      c.getDatasetMeta(0).data.forEach((pt, i) => ctx.fillText(c.data.datasets[0].data[i].label, pt.x + 8, pt.y));
+      ctx.fillStyle = css('--ink-2'); ctx.font = `12px ${Chart.defaults.font.family}`; ctx.textBaseline = 'middle'; ctx.textAlign = 'left';
+      const pts = c.getDatasetMeta(0).data;
+      const R = 6, H = 14;
+      const taken = pts.map((p) => [p.x - R, p.y - R, p.x + R, p.y + R]);
+      const hit = (b) => b[0] < a.left || b[2] > a.right || b[1] < a.top || b[3] > a.bottom
+        || taken.some((t) => b[0] < t[2] && b[2] > t[0] && b[1] < t[3] && b[3] > t[1]);
+      pts.forEach((p, i) => {
+        const text = c.data.datasets[0].data[i].label;
+        const w = ctx.measureText(text).width;
+        const spots = [[p.x + 8, p.y], [p.x - 8 - w, p.y], [p.x - w / 2, p.y - 13], [p.x - w / 2, p.y + 13]];
+        const spot = spots.find(([x, y]) => !hit([x, y - H / 2, x + w, y + H / 2]));
+        if (!spot) return;
+        taken.push([spot[0], spot[1] - H / 2, spot[0] + w, spot[1] + H / 2]);
+        ctx.fillText(text, spot[0], spot[1]);
+      });
       ctx.restore();
     },
   };
-  const sym = (v) => Math.max(5, Math.ceil(Math.abs(v) / 5) * 5);
+  // 데이터 범위에 맞추되 0(국면 경계)은 항상 보이게, 양끝에 여백
+  const fit = (step, minSpan) => (s) => {
+    const lo = Math.min(0, s.min), hi = Math.max(0, s.max);
+    const pad = Math.max((hi - lo) * 0.08, minSpan / 2);
+    s.min = Math.floor((lo - pad) / step) * step;
+    s.max = Math.ceil((hi + pad) / step) * step;
+  };
   return makeChart(canvas, {
     type: 'scatter',
     data: { datasets: [{ data: [], pointRadius: 5, pointHoverRadius: 7, backgroundColor: css('--series-1'), borderColor: css('--surface'), borderWidth: 2 }] },
     options: {
       scales: {
-        x: { title: { display: true, text: '거래량 변화 (최근 3개월 vs 직전 3개월, %)' }, grid: { display: false }, afterDataLimits: (s) => { const m = sym(Math.max(Math.abs(s.min), Math.abs(s.max))); s.min = -m; s.max = m; } },
-        y: { title: { display: true, text: '가격 변화 (3개월, %)' }, afterDataLimits: (s) => { const m = Math.max(2, Math.ceil(Math.max(Math.abs(s.min), Math.abs(s.max)))); s.min = -m; s.max = m; } },
+        x: { title: { display: true, text: '거래량 변화 (최근 3개월 vs 직전 3개월, %)' }, grid: { display: false }, afterDataLimits: fit(5, 10) },
+        y: { title: { display: true, text: '가격 변화 (3개월, %)' }, afterDataLimits: fit(1, 2) },
       },
       onClick: (e, els) => { if (els[0]) location.hash = `#/r/${e.chart.data.datasets[0].data[els[0].index].code}`; },
       onHover: (e, els) => { e.native.target.style.cursor = els.length ? 'pointer' : 'default'; },
