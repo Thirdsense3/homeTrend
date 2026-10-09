@@ -48,7 +48,7 @@ function write(rel, data) {
     const [trades, rents] = [await fetchAll('trade', r.code), await fetchAll('rent', r.code)];
     bytes += write(`data/region/${r.code}.json`, pack(yms, trades, rents));
     // 지표(고점·장기 평균 거래량)는 받은 기간 전체로 계산하고, 스파크라인·궤적용 시계열만 잘라 보낸다
-    const { series, indicators } = an.regionSummary(yms, trades, []);
+    const { series, indicators } = an.regionSummary(yms, trades, rents);
     write(`data/overview/${r.code}.json`, { code: r.code, series: series.slice(-OVERVIEW_MONTHS).map(({ ym, ma, count }) => ({ ym, ma, count })), indicators });
     console.log(`[${++done}/${regions.length}] ${r.name}: 매매 ${trades.length.toLocaleString()} · 전월세 ${rents.length.toLocaleString()}`);
   });
