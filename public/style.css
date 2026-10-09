@@ -230,6 +230,9 @@ body.busy .top::after {
 /* 한 줄 요약 */
 .lead { font-size: 15px; line-height: 1.6; color: var(--ink); margin: 4px 0 20px; }
 .lead a { color: var(--series-1); }
+/* 요약 문장 자리의 로딩 진행 막대 */
+.lead-progress { display: block; width: min(320px, 100%); height: 4px; margin-top: 8px; border-radius: 2px; background: var(--grid); overflow: hidden; }
+.lead-progress i { display: block; height: 100%; background: var(--series-1); transition: width 0.2s; }
 
 /* ⓘ 설명 말풍선 */
 .tip {
