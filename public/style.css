@@ -134,6 +134,9 @@ tbody tr.link:hover { background: var(--accent-wash); }
 .legend i { display: inline-block; width: 12px; height: 3px; border-radius: 2px; vertical-align: middle; margin-right: 6px; }
 .legend i.dot { width: 8px; height: 8px; border-radius: 50%; }
 
+.tag { display: inline-block; font-size: 11px; font-weight: 500; color: var(--muted); border: 1px solid var(--border); border-radius: 4px; padding: 0 5px; margin-left: 4px; vertical-align: 1px; }
+tr.muted td { color: var(--muted); }
+
 .links a { margin-right: 12px; font-size: 13px; color: var(--series-1); }
 .err { color: var(--up); }
 .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }

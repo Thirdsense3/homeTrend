@@ -43,14 +43,17 @@ async function getRaw(code, months) {
   }
   return state.raw[k];
 }
-async function getRegion(code, months) {
-  const { yms, trades, rents } = await getRaw(code, months);
-  return { ...A.regionSummary(yms, trades, rents), apartments: A.apartmentList(trades) };
+// brokerOnly: 직거래(가족 간 거래 등 시세와 동떨어질 수 있는 거래)를 빼고 계산
+async function getRegion(code, months, brokerOnly) {
+  const raw = await getRaw(code, months);
+  const trades = brokerOnly ? raw.trades.filter((t) => t.kind !== '직거래') : raw.trades;
+  return { ...A.regionSummary(raw.yms, trades, raw.rents), apartments: A.apartmentList(trades) };
 }
 async function getApt(code, key, months) {
   const { yms, trades, rents } = await getRaw(code, months);
-  const t = trades.filter((x) => A.aptKey(x) === key).sort((a, b) => a.date.localeCompare(b.date));
+  const t = A.markBulk(trades.filter((x) => A.aptKey(x) === key)).sort((a, b) => a.date.localeCompare(b.date));
   if (!t.length) throw new Error('해당 기간에 거래가 없는 단지입니다');
+  if (t.every((x) => x.bulk)) throw new Error('해당 기간에 일괄 거래(통매각)만 있어 시세를 계산할 수 없는 단지입니다');
   const r = rents.filter((x) => A.aptKey(x) === key).sort((a, b) => a.date.localeCompare(b.date));
   const last = t[t.length - 1];
   return {
@@ -184,8 +187,8 @@ const OV_COLS = [
   ['eq84', '84㎡ 환산', (r) => r.ind?.current, (r) => (r.ind?.current ? fmtEok(Math.round(r.ind.current * 84 / PYEONG / 100) * 100) : '–')],
   ['chg3m', '3개월', (r) => r.ind?.chg3m, (r) => delta(r.ind?.chg3m)],
   ['chg12m', '12개월', (r) => r.ind?.chg12m, (r) => delta(r.ind?.chg12m)],
-  ['fromPeak', '고점 대비', (r) => r.ind?.fromPeak, (r) => delta(r.ind?.fromPeak)],
-  ['volChg', '거래량 변화', (r) => r.ind?.volChg, (r) => (r.ind ? `${r.ind.volRecent}건/월 ${delta(r.ind.volChg, 0)}` : '–')],
+  ['fromPeak', '5년 고점 대비', (r) => r.ind?.fromPeak, (r) => (r.ind ? `${delta(r.ind.fromPeak)} <span class="muted">${fmtYm(r.ind.peakYm)}</span>` : '–')],
+  ['volVsAvg', '거래량 (장기평균 대비)', (r) => r.ind?.volVsAvg, (r) => (r.ind ? `${r.ind.volRecent}건/월 ${delta(r.ind.volVsAvg, 0)}` : '–')],
   ['phase', '국면', (r) => r.ind?.phase?.id, (r) => (r.error ? `<span class="err" title="${esc(r.error)}">오류</span>` : r.ind ? phaseChip(r.ind.phase) : '<span class="muted">불러오는 중…</span>')],
   ['spark', '24개월 추이', null, (r) => (r.series ? sparkline(r.series.slice(-24).map((s) => s.ma)) : '')],
 ];
@@ -221,9 +224,9 @@ async function viewOverview(group, id) {
   regions.forEach((r) => { if (state.overview[r.code]?.error) delete state.overview[r.code]; });
   app.innerHTML = `
     <h1>${esc(group)} 지역별 시세 트렌드</h1>
-    <p class="sub">실거래 평당가의 3개월 이동평균 기준 (단지 구성 보정, 신고 진행 중인 지난달 제외). 지역을 누르면 단지별로 볼 수 있어요.</p>
+    <p class="sub">실거래 평당가의 3개월 이동평균 기준 (단지 구성 보정, 신고 진행 중인 지난달·통매각 같은 일괄 거래 제외). 거래량은 최근 3개월을 36개월 평균과 비교해요. 지역을 누르면 단지별로 볼 수 있어요.</p>
     <div class="card">
-      <h2>국면 지도 — 가격 변화 × 거래량 변화 (최근 3개월)</h2>
+      <h2>국면 지도 — 가격 변화 × 거래량 (최근 3개월)</h2>
       <p class="muted" style="margin:-6px 0 10px;font-size:12px">벌집순환모형: 거래량이 먼저 움직이고 가격이 따라옵니다. 오른쪽 아래(불황)→가운데 오른쪽(회복진입)→오른쪽 위(회복) 순서로 옮겨가는 지역을 주목하세요.</p>
       <div class="chart-box tall"><canvas id="phaseMap"></canvas></div>
     </div>
@@ -241,8 +244,8 @@ async function viewOverview(group, id) {
 
   const map = phaseMap(document.getElementById('phaseMap'));
   const refreshMap = () => {
-    map.data.datasets[0].data = rows.filter((r) => r.ind?.chg3m != null && r.ind?.volChg != null)
-      .map((r) => ({ x: r.ind.volChg * 100, y: r.ind.chg3m * 100, label: r.name.replace(/ \(.+\)/, ''), code: r.code, phase: r.ind.phase }));
+    map.data.datasets[0].data = rows.filter((r) => r.ind?.chg3m != null && r.ind?.volVsAvg != null)
+      .map((r) => ({ x: r.ind.volVsAvg * 100, y: r.ind.chg3m * 100, label: r.name.replace(/ \(.+\)/, ''), code: r.code, phase: r.ind.phase }));
     map.update('none');
   };
   render(); refreshMap();
@@ -320,7 +323,7 @@ function phaseMap(canvas) {
     data: { datasets: [{ data: [], pointRadius: 5, pointHoverRadius: 7, backgroundColor: css('--series-1'), borderColor: css('--surface'), borderWidth: 2 }] },
     options: {
       scales: {
-        x: { title: { display: true, text: '거래량 변화 (최근 3개월 vs 직전 3개월, %)' }, grid: { display: false }, afterDataLimits: fit(5, 10) },
+        x: { title: { display: true, text: '거래량 (최근 3개월 vs 36개월 평균, %)' }, grid: { display: false }, afterDataLimits: fit(5, 10) },
         y: { title: { display: true, text: '가격 변화 (3개월, %)' }, afterDataLimits: fit(1, 2) },
       },
       onClick: (e, els) => { if (els[0]) location.hash = `#/r/${e.chart.data.datasets[0].data[els[0].index].code}`; },
@@ -332,8 +335,9 @@ function phaseMap(canvas) {
 }
 
 // ---------- 지역 상세 ----------
+const BULK_HINT = '10건 이상 — 임대주택 통매각 같은 일괄 거래로 보고 시세·거래량에서 뺐어요';
 const APT_COLS = [
-  ['apt', '단지', (r) => r.apt, (r) => `${esc(r.apt)}`],
+  ['apt', '단지', (r) => r.apt, (r) => `${esc(r.apt)}${r.bulk ? ` <span class="tag" title="같은 날 직거래 ${BULK_HINT}">일괄 ${r.bulk}건 제외</span>` : ''}`],
   ['dong', '동', (r) => r.dong, (r) => esc(r.dong)],
   ['built', '준공', (r) => r.built, (r) => r.built || '–'],
   ['count12m', '최근 1년 거래', (r) => r.count12m, (r) => `${r.count12m}건`],
@@ -362,6 +366,20 @@ function bindMonths(view) {
     route();
   }));
 }
+// 거래 유형: 전체 / 중개거래만 (직거래 제외). 화면을 옮겨도 유지
+function getKind() { try { return sessionStorage.getItem('homeTrend.kind') || 'all'; } catch (_) { return 'all'; } }
+function kindSeg(brokerOnly) {
+  return `<div class="seg" id="kind" title="직거래에는 가족 간 거래처럼 시세와 동떨어진 거래가 섞일 수 있어요">${[['all', '전체 거래'], ['broker', '중개거래만']].map(([k, l]) => `<button data-k="${k}" class="${(k === 'broker') === brokerOnly ? 'on' : ''}">${l}</button>`).join('')}</div>`;
+}
+function bindKind() {
+  app.querySelectorAll('#kind button').forEach((b) => b.addEventListener('click', () => {
+    if (b.classList.contains('on')) return;
+    try { sessionStorage.setItem('homeTrend.kind', b.dataset.k); } catch (_) { /* 무시 */ }
+    b.parentNode.querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b));
+    state.keepView = true;
+    route();
+  }));
+}
 // 데이터를 기다리는 동안: 기간 변경이면 현재 화면을 흐리게, 아니면 로딩 문구
 function showLoading(html) {
   document.body.classList.add('busy');
@@ -374,22 +392,24 @@ const APT_MONTHS = [[36, '3년'], [60, '5년'], [120, '10년'], [192, '16년']];
 async function viewRegion(code, id) {
   const region = requireRegion(code);
   const opts = monthOpts(REGION_MONTHS);
-  const months = getMonths(`region.${code}`, opts, 36);
+  const months = getMonths(`region.${code}`, opts, Math.min(60, state.meta.months || 60));
+  const brokerOnly = getKind() === 'broker';
   showLoading(`<div class="crumb"><a href="#/g/${esc(region.group)}">${esc(region.group)}</a> ›</div><h1>${esc(region.name)}</h1><p class="muted">실거래 ${months}개월치 불러오는 중… (처음 보는 기간은 국토부 API 호출로 30초 정도 걸릴 수 있어요)</p>`);
-  const d = await getRegion(code, months);
+  const d = await getRegion(code, months, brokerOnly);
   if (isStale(id)) return;
   destroyCharts();
   const ind = d.indicators;
+  const s = d.series;
   app.innerHTML = `
     <div class="crumb"><a href="#/g/${esc(region.group)}">${esc(region.group)}</a> ›</div>
-    <div class="row"><h1>${esc(region.name)}</h1>${phaseChip(ind.phase)}<span class="spacer"></span>${monthsSeg(months, opts)}</div>
-    <p class="sub">평당가 = 전용면적 기준 거래가 ÷ 평 (중위값). 이동평균은 거래된 단지 구성이 달라 생기는 착시를 보정한 값이고, 최근 지표는 신고가 끝난 달까지로 계산해요.</p>
+    <div class="row"><h1>${esc(region.name)}</h1>${phaseChip(ind.phase)}<span class="spacer"></span>${kindSeg(brokerOnly)}${monthsSeg(months, opts)}</div>
+    <p class="sub">평당가 = 전용면적 기준 거래가 ÷ 평 (중위값). 이동평균은 거래된 단지 구성이 달라 생기는 착시를 보정한 값이고, 최근 지표는 신고가 끝난 달까지로 계산해요. 통매각 같은 일괄 거래는 빼고 계산해요.</p>
     <div class="kpis">
       <div class="kpi"><div class="label">평당 매매가</div><div class="value num">${fmtMan(ind.current)}</div><div class="hint">${fmtYm(ind.currentYm)} 기준 · 84㎡ 환산 ${ind.current ? fmtEok(Math.round(ind.current * 84 / PYEONG / 100) * 100) : '–'}</div></div>
       <div class="kpi"><div class="label">3개월 변화</div><div class="value num">${delta(ind.chg3m)}</div><div class="hint">12개월 ${delta(ind.chg12m)}</div></div>
       <div class="kpi"><div class="label">기간 내 고점 대비</div><div class="value num">${delta(ind.fromPeak)}</div><div class="hint">고점 ${fmtYm(ind.peakYm)} · ${fmtMan(ind.peak)}</div></div>
       <div class="kpi"><div class="label">고점 이후 저점 대비</div><div class="value num">${delta(ind.fromLow)}</div><div class="hint">${ind.lowYm ? `저점 ${fmtYm(ind.lowYm)} · ${fmtMan(ind.low)}` : '현재가 고점'}</div></div>
-      <div class="kpi"><div class="label">월 거래량 (최근 3개월)</div><div class="value num">${ind.volRecent ?? '–'}건</div><div class="hint">직전 3개월 대비 ${delta(ind.volChg, 0)} · 장기평균 대비 ${delta(ind.volVsAvg, 0)}</div></div>
+      <div class="kpi"><div class="label">월 거래량 (최근 3개월)</div><div class="value num">${ind.volRecent ?? '–'}건</div><div class="hint">장기평균 ${delta(ind.volVsAvg, 0)} · 직전 3개월 ${delta(ind.volChg, 0)}${brokerOnly ? '' : ` · 직거래 ${fmtPct(ind.directShare, 0)}`}</div></div>
       <div class="kpi"><div class="label">전세가율 (최근 6개월)</div><div class="value num">${fmtPct(ind.jeonseRatio, 0)}</div><div class="hint">평당 전세가 ÷ 평당 매매가</div></div>
     </div>
     ${ind.phase ? `<p class="phase-note card">${ind.phase.id ? `${ind.phase.id}국면 ` : ''}<b>${esc(ind.phase.name)}</b> — ${esc(ind.phase.note)}</p>` : ''}
@@ -400,7 +420,7 @@ async function viewRegion(code, id) {
     </div>
     <div class="card">
       <h2>월별 매매 거래량</h2>
-      <p class="muted" style="margin:-6px 0 8px;font-size:12px">거래량은 가격보다 먼저 움직이는 경향이 있어요. 마지막 달(옅은 막대)은 신고 진행 중이라 덜 잡힙니다.</p>
+      <p class="muted" style="margin:-6px 0 8px;font-size:12px">거래량은 가격보다 먼저 움직이는 경향이 있어요. 마지막 달(옅은 막대)은 신고 진행 중이라 덜 잡힙니다.${s.some((r) => r.bulk) ? ' 회색은 통매각 같은 일괄 거래로, 지표 계산에서 뺐어요.' : ''}</p>
       <div class="chart-box short"><canvas id="vol"></canvas></div>
     </div>
     <div class="card">
@@ -408,8 +428,8 @@ async function viewRegion(code, id) {
       <div class="table-wrap"><table><thead></thead><tbody></tbody></table></div>
     </div>`;
   bindMonths(`region.${code}`);
+  bindKind();
 
-  const s = d.series;
   const labels = s.map((r) => fmtYm(r.ym));
   makeChart(document.getElementById('price'), {
     type: 'line',
@@ -429,10 +449,13 @@ async function viewRegion(code, id) {
   });
   makeChart(document.getElementById('vol'), {
     type: 'bar',
-    data: { labels, datasets: [{ label: '거래', data: s.map((r) => r.count), backgroundColor: s.map((_, i) => (i === s.length - 1 ? css('--series-1-soft') : css('--series-1'))), borderRadius: { topLeft: 3, topRight: 3 }, borderSkipped: 'bottom', barPercentage: 0.8, categoryPercentage: 0.9 }] },
+    data: { labels, datasets: [
+      { label: '거래', data: s.map((r) => r.count), backgroundColor: s.map((_, i) => (i === s.length - 1 ? css('--series-1-soft') : css('--series-1'))), borderRadius: { topLeft: 3, topRight: 3 }, borderSkipped: 'bottom', barPercentage: 0.8, categoryPercentage: 0.9 },
+      { label: '일괄 거래 (제외)', data: s.map((r) => r.bulk || null), backgroundColor: css('--axis'), borderRadius: { topLeft: 3, topRight: 3 }, borderSkipped: 'bottom', barPercentage: 0.8, categoryPercentage: 0.9 },
+    ] },
     options: {
-      scales: { x: { grid: { display: false }, ticks: { maxTicksLimit: 10, maxRotation: 0 } }, y: { ticks: { precision: 0 } } },
-      plugins: { tooltip: { callbacks: { label: (c) => ` ${c.raw}건${c.dataIndex === s.length - 1 ? ' (신고 진행 중)' : ''}` } } },
+      scales: { x: { stacked: true, grid: { display: false }, ticks: { maxTicksLimit: 10, maxRotation: 0 } }, y: { stacked: true, ticks: { precision: 0 } } },
+      plugins: { tooltip: { callbacks: { label: (c) => (c.datasetIndex ? ` 일괄 거래 ${c.raw}건 (지표에서 제외)` : ` ${c.raw}건${c.dataIndex === s.length - 1 ? ' (신고 진행 중)' : ''}`) } } },
     },
   });
 
@@ -516,7 +539,8 @@ async function viewApt(code, key, id) {
     destroyCharts();
     const sel = d.areas.find((a) => a.area === areaSel);
     const ind = sel.indicators;
-    const trades = d.trades.filter((t) => String(Math.round(t.area)) === areaSel);
+    const all = d.trades.filter((t) => String(Math.round(t.area)) === areaSel);
+    const trades = all.filter((t) => !t.bulk);
     const jeonse = d.rents.filter((t) => String(Math.round(t.area)) === areaSel && t.monthly === 0);
     const recent = median(trades.slice(-3).map((t) => t.price));
     const max = trades.reduce((a, b) => (b.price > a.price ? b : a));
@@ -538,7 +562,7 @@ async function viewApt(code, key, id) {
       </div>
       <div class="grid2">
         <div class="card table-wrap"><h2>최근 매매</h2><table><thead><tr><th class="l">계약일</th><th>층</th><th>거래가</th><th>평당가</th><th class="l">유형</th></tr></thead><tbody>
-          ${trades.slice(-25).reverse().map((t) => `<tr><td class="l">${t.date.slice(2).replace(/-/g, '.')}</td><td>${t.floor}</td><td>${fmtEok(t.price)}</td><td>${fmtMan(t.price / (t.area / PYEONG))}</td><td class="l muted">${esc(t.kind)}</td></tr>`).join('')}
+          ${all.slice(-25).reverse().map((t) => `<tr${t.bulk ? ' class="muted"' : ''}><td class="l">${t.date.slice(2).replace(/-/g, '.')}</td><td>${t.floor}</td><td>${fmtEok(t.price)}</td><td>${fmtMan(t.price / (t.area / PYEONG))}</td><td class="l muted">${esc(t.kind)}${t.bulk ? ` · <span class="tag" title="같은 날 직거래 ${BULK_HINT}">일괄</span>` : ''}</td></tr>`).join('')}
         </tbody></table></div>
         <div class="card table-wrap"><h2>최근 전세</h2><table><thead><tr><th class="l">계약일</th><th>층</th><th>보증금</th></tr></thead><tbody>
           ${jeonse.slice(-25).reverse().map((t) => `<tr><td class="l">${t.date.slice(2).replace(/-/g, '.')}</td><td>${t.floor}</td><td>${fmtEok(t.deposit)}</td></tr>`).join('') || '<tr><td class="l muted" colspan="3">전세 거래 없음</td></tr>'}
@@ -587,7 +611,7 @@ async function viewWatch(id) {
     try {
       const d = await getApt(w.code, w.key, 36);
       const main = d.areas[0];
-      const tr = d.trades.filter((t) => String(Math.round(t.area)) === main.area);
+      const tr = d.trades.filter((t) => !t.bulk && String(Math.round(t.area)) === main.area);
       const recent = median(tr.slice(-3).map((t) => t.price));
       el.innerHTML = `
         <div class="row"><b>${esc(w.name)}</b><span class="spacer"></span><span class="muted">${esc(w.region)}</span></div>

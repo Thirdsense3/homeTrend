@@ -20,9 +20,10 @@ const routes = [
   // 개요 테이블용: 매매만 조회 (호출 수 절약)
   [/^\/api\/overview\/(\d{5})$/, async ([code], q) => {
     if (!regionOf(code)) throw notFound();
-    const { yms, rows } = await getRange('trade', code, clampMonths(q.get('months'), 25));
+    // 지표(고점·장기 평균 거래량)는 5년으로 계산하고, 시계열은 최근 25개월만 보낸다
+    const { yms, rows } = await getRange('trade', code, clampMonths(q.get('months'), 60));
     const { series, indicators } = an.regionSummary(yms, rows, []);
-    return { code, series: series.map(({ ym, ma, count }) => ({ ym, ma, count })), indicators };
+    return { code, series: series.slice(-25).map(({ ym, ma, count }) => ({ ym, ma, count })), indicators };
   }],
 
   // 지역 원본 데이터(압축). 지역·단지 화면의 계산은 브라우저(analyze.js)에서 한다
