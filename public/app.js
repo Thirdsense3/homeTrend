@@ -190,7 +190,8 @@ const secLabel = (t) => tsLabel(t * 1000);
 const secTick = (t, type) => { const d = new Date(t * 1000); return type === LWC.TickMarkType.Year ? `${d.getUTCFullYear()}` : `${d.getUTCMonth() + 1}월`; };
 const alpha = (hex, a) => { const n = parseInt(hex.slice(1), 16); return `rgba(${n >> 16}, ${(n >> 8) & 255}, ${n & 255}, ${a})`; };
 function tvChart(el) {
-  const line = { color: css('--axis'), labelBackgroundColor: css('--ink-2') };
+  // 십자선: 격자(--grid)·축(--axis)보다 확실히 진하게, 점선으로 구분
+  const line = { color: css('--muted'), width: 1, style: LWC.LineStyle.Dashed, labelBackgroundColor: css('--ink-2') };
   const chart = LWC.createChart(el, {
     autoSize: true,
     layout: {
@@ -318,7 +319,7 @@ class DotsView {
   update(data, options) { this.data = data; this.opts = options; }
   priceValueBuilder(r) { const ys = r.pts.map((p) => p.y); return [Math.min(...ys), Math.max(...ys), ys[ys.length - 1]]; }
   isWhitespace(r) { return !r.pts?.length; }
-  defaultOptions() { return { ...LWC.customSeriesDefaultOptions, color: '#888', ring: '#d03b3b', focus: '#000', hoverId: -1, anchorId: -1, lastValueVisible: false, priceLineVisible: false }; }
+  defaultOptions() { return { ...LWC.customSeriesDefaultOptions, color: '#888', ring: '#d03b3b', focus: '#000', hoverId: -1, anchorId: -1, pinId: -1, lastValueVisible: false, priceLineVisible: false }; }
   // 칸 너비 안에서 점의 x 좌표 (media 좌표)
   dotX(barX, p) { return barX + p.dx * this.data.barSpacing * 0.9; }
   draw(target, toY) {
@@ -336,10 +337,10 @@ class DotsView {
           ctx.beginPath(); ctx.arc(x, y * vr, r * hr, 0, 2 * Math.PI);
           ctx.globalAlpha = 0.75; ctx.fillStyle = o.color; ctx.fill(); ctx.globalAlpha = 1;
           if (p.high) { ctx.lineWidth = 1.5 * hr; ctx.strokeStyle = o.ring; ctx.stroke(); }
-          if (p.id === o.hoverId || p.id === o.anchorId) focus.push([x, y * vr]);
+          if (p.id === o.hoverId || p.id === o.anchorId || p.id === o.pinId) focus.push([x, y * vr]);
         }
       }
-      // 마우스를 올린 점·기준점은 맨 위에 크게
+      // 마우스를 올린 점·기준점·상세 카드를 띄운 점은 맨 위에 크게
       focus.forEach(([x, y]) => {
         ctx.beginPath(); ctx.arc(x, y, (r + 3) * hr, 0, 2 * Math.PI);
         ctx.lineWidth = 2 * hr; ctx.strokeStyle = o.focus; ctx.stroke();
@@ -348,8 +349,8 @@ class DotsView {
   }
 }
 
-// 단지 평형 차트: 실거래 점 / 월봉 전환, 6개월 이동평균, 아래 칸 월별 매매 건수.
-// 점을 누르면 그 거래가 '기준'이 되고, 이후 큰 숫자 옆 등락률은 기준 대비로 바뀐다
+// 단지 평형 차트: 실거래 점 / 월봉 전환 (매매·전세 모두), 6개월 이동평균, 아래 칸 월별 매매 건수.
+// 점(월봉 모드에선 그 달)을 누르면 상세 카드가 뜨고, 카드에서 그 거래를 '기준'으로 잡으면 큰 숫자 옆 등락률이 기준 대비로 바뀐다
 function aptChart(sel, allTrades, allJeonse) {
   const s = sel.series, last = s.length - 1;
   const o = state.ap;
@@ -358,9 +359,9 @@ function aptChart(sel, allTrades, allJeonse) {
   const warm = allTrades.length ? `${+allTrades[0].date.slice(0, 4) + 1}${allTrades[0].date.slice(4)}` : '';
   let top = -Infinity;
   const tradePts = allTrades.map((t, n) => {
-    const high = t.date >= warm && t.price > top;
+    const high = t.date >= warm && t.price > top, prevTop = top > 0 ? top : null;
     top = Math.max(top, t.price);
-    return { id: n, y: t.price, dx: dayOffset(t.date), ym: ymOf(t), t, kind: '매매', high };
+    return { id: n, y: t.price, dx: dayOffset(t.date), ym: ymOf(t), t, kind: '매매', high, prevTop };
   });
   const jeonsePts = allJeonse.map((t, n) => ({ id: 1e6 + n, y: t.deposit, dx: dayOffset(t.date), ym: ymOf(t), t, kind: '전세' }));
   const low = (p) => p.t.floor <= 3; // 저층(지하 포함)은 시세보다 낮게 거래되는 경우가 많다
@@ -378,6 +379,11 @@ function aptChart(sel, allTrades, allJeonse) {
   const jView = new DotsView(), tView = new DotsView();
   const jDots = chart.addCustomSeries(jView, { ...dotOpts, color: css('--series-2') });
   const tDots = chart.addCustomSeries(tView, { ...dotOpts, color: css('--series-1') });
+  // 전세 월봉: 전세 색 하나로, 오른 달은 채움·내린 달은 속 빈 몸통. 매매 월봉보다 먼저 넣어 뒤에 깔린다
+  const jCandles = chart.addSeries(LWC.CandlestickSeries, {
+    priceFormat: eokFmt, upColor: css('--series-2'), downColor: 'transparent', borderUpColor: css('--series-2'), borderDownColor: css('--series-2'),
+    wickUpColor: css('--series-2'), wickDownColor: css('--series-2'), lastValueVisible: false, priceLineVisible: false,
+  });
   const candles = chart.addSeries(LWC.CandlestickSeries, {
     priceFormat: eokFmt, upColor: css('--up'), downColor: css('--down'), wickUpColor: css('--up'), wickDownColor: css('--down'),
     borderVisible: false, lastValueVisible: false, priceLineVisible: false,
@@ -388,6 +394,7 @@ function aptChart(sel, allTrades, allJeonse) {
 
   // 보이는 점 (층 필터·전세 토글 반영) → 각 시리즈 데이터
   let shownT = [], shownJ = [];
+  const ohlc = (ps) => { if (!ps?.length) return null; const ys = ps.map((p) => p.y); return { open: ys[0], close: ys[ys.length - 1], high: Math.max(...ys), low: Math.min(...ys) }; };
   const byMonth = (pts) => { const m = new Map(); pts.forEach((p) => { if (!m.has(p.ym)) m.set(p.ym, []); m.get(p.ym).push(p); }); return m; };
   const apply = () => {
     shownT = tradePts.filter((p) => o.low || !low(p));
@@ -395,14 +402,14 @@ function aptChart(sel, allTrades, allJeonse) {
     const mt = byMonth(shownT), mj = byMonth(shownJ);
     const dots = o.mode === 'dots';
     tDots.setData(s.map((r) => (dots && mt.has(r.ym) ? { time: ymSec(r.ym), pts: mt.get(r.ym) } : { time: ymSec(r.ym) })));
-    jDots.setData(s.map((r) => (mj.has(r.ym) ? { time: ymSec(r.ym), pts: mj.get(r.ym) } : { time: ymSec(r.ym) })));
+    jDots.setData(s.map((r) => (dots && mj.has(r.ym) ? { time: ymSec(r.ym), pts: mj.get(r.ym) } : { time: ymSec(r.ym) })));
     // 월봉: 그 달 첫 거래 → 마지막 거래가 몸통, 최저~최고가 꼬리
-    candles.setData(s.map((r) => {
-      const ps = mt.get(r.ym);
-      if (dots || !ps) return { time: ymSec(r.ym) };
-      const ys = ps.map((p) => p.y);
-      return { time: ymSec(r.ym), open: ys[0], close: ys[ys.length - 1], high: Math.max(...ys), low: Math.min(...ys) };
-    }));
+    const bars = (m) => s.map((r) => {
+      const c = !dots && ohlc(m.get(r.ym));
+      return c ? { time: ymSec(r.ym), ...c } : { time: ymSec(r.ym) };
+    });
+    candles.setData(bars(mt));
+    jCandles.setData(bars(mj));
     vol.setData(s.map((r, i) => ({ time: ymSec(r.ym), value: mt.get(r.ym)?.length || 0, ...(i === last ? { color: alpha(css('--volume'), 0.4) } : {}) })));
     jLine.applyOptions({ visible: o.jeonse });
   };
@@ -458,7 +465,7 @@ function aptChart(sel, allTrades, allJeonse) {
     return best;
   };
   // applyOptions는 다시 그리면서 십자선 이벤트를 또 부르므로, 값이 바뀔 때만 적용 (안 그러면 무한 반복)
-  const ids = { hoverId: -1, anchorId: -1 };
+  const ids = { hoverId: -1, anchorId: -1, pinId: -1 };
   const focus = (k, id) => {
     if (ids[k] === id) return;
     ids[k] = id;
@@ -469,18 +476,106 @@ function aptChart(sel, allTrades, allJeonse) {
     focus('hoverId', dot ? dot.id : -1);
     showHead(p.time != null ? byTime.get(p.time) ?? null : null, dot);
   });
-  chart.subscribeClick((p) => {
-    const dot = nearest(p);
-    anchor = dot && dot !== anchor ? dot : null;
+  // 상세 카드: 점을 누르면 그 거래, 월봉 모드에선 그 달의 매매·전세 요약. 빈 곳을 누르면 닫힌다
+  const pop = document.getElementById('apPop');
+  let pinned = null; // { dot } 또는 { i } (월)
+  const row = (k, v) => `<div><dt>${k}</dt><dd>${v}</dd></div>`;
+  const dotCard = (dot) => {
+    const t = dot.t, i = byTime.get(ymSec(dot.ym)), m = ma[i];
+    const same = (dot.kind === '매매' ? shownT : shownJ).filter((q) => q.ym === dot.ym);
+    const isAnchor = anchor === dot;
+    return `<div class="pop-head"><span class="pop-kind"><i class="dot" style="background:${css(dot.kind === '매매' ? '--series-1' : '--series-2')}"></i>${dot.kind}</span><span class="muted">${t.date.replace(/-/g, '.')}</span><button type="button" class="pop-x" aria-label="닫기">×</button></div>
+      <div class="pop-value num">${fmtEok(dot.y)}${dot.high ? ' <span class="tag high">신고가</span>' : ''}</div>
+      <dl class="pop-rows num">
+        ${row('층 · 전용', `${t.floor}층 · ${t.area}㎡`)}
+        ${dot.kind === '매매' ? row('평당가', fmtMan(dot.y / (t.area / PYEONG))) : ''}
+        ${dot.kind === '매매' && t.kind ? row('거래 유형', esc(t.kind)) : ''}
+        ${dot.kind === '매매' && m ? row('6개월 이동평균 대비', delta(dot.y / m - 1)) : ''}
+        ${dot.kind === '매매' && dot.prevTop ? row('직전 최고가 대비', `${delta(dot.y / dot.prevTop - 1)} <span class="muted">${fmtEok(dot.prevTop)}</span>`) : ''}
+        ${dot.kind === '전세' && m ? row('매매 이동평균 대비 (전세가율)', fmtPct(dot.y / m, 0)) : ''}
+        ${row(`같은 달 ${dot.kind}`, `${same.length}건${same.length > 1 ? ` · ${range(same)}` : ''}`)}
+        ${anchor && !isAnchor ? row(`기준 ${dd(anchor.t.date)} 대비`, delta(dot.y / anchor.y - 1)) : ''}
+      </dl>
+      <button type="button" class="pop-btn" data-anchor>${isAnchor ? '기준 해제' : '이 거래를 기준으로 비교'}</button>`;
+  };
+  const monthCard = (i) => {
+    const r = s[i], ts = shownT.filter((p) => p.ym === r.ym), js = shownJ.filter((p) => p.ym === r.ym);
+    const part = (name, ps) => {
+      const c = ohlc(ps);
+      if (!c) return row(name, '<span class="muted">거래 없음</span>');
+      return row(`${name} ${ps.length}건`, `${delta(c.close / c.open - 1)}`)
+        + row('첫 · 마지막', `${fmtEok(c.open)} → ${fmtEok(c.close)}`)
+        + row('최저 ~ 최고', `${fmtEok(c.low)} ~ ${fmtEok(c.high)}`);
+    };
+    return `<div class="pop-head"><span class="pop-kind">${fmtYm(r.ym)} 월봉</span>${i === last ? '<span class="muted">신고 진행 중</span>' : ''}<button type="button" class="pop-x" aria-label="닫기">×</button></div>
+      <div class="pop-value num">${ma[i] != null ? fmtEok(ma[i]) : '–'} <span class="muted" style="font-size:12px;font-weight:400">매매 6개월 이동평균</span></div>
+      <dl class="pop-rows num">${part('매매', ts)}${o.jeonse ? part('전세', js) : ''}</dl>`;
+  };
+  // 카드 자리: 대상 오른쪽(자리가 없으면 왼쪽), 세로는 차트 안으로. 보이는 구간 밖이면 숨김
+  const place = () => {
+    if (!pinned) { pop.hidden = true; return; }
+    const ym = pinned.dot ? pinned.dot.ym : s[pinned.i].ym;
+    const x0 = chart.timeScale().timeToCoordinate(ymSec(ym));
+    const yv = pinned.dot ? pinned.dot.y : (ohlc(shownT.filter((p) => p.ym === ym)) || ohlc(shownJ.filter((p) => p.ym === ym)))?.close;
+    const yc = yv != null ? line.priceToCoordinate(yv) : null;
+    const box = pop.parentElement, W = box.clientWidth, H = chart.panes()[0].getHeight();
+    if (x0 == null || yc == null || x0 < 0 || x0 > W) { pop.hidden = true; return; }
+    const x = pinned.dot ? tView.dotX(x0, pinned.dot) : x0;
+    pop.hidden = false;
+    const w = pop.offsetWidth, h = pop.offsetHeight, gap = 14;
+    const left = Math.max(0, Math.min(W - w, x + gap + w < W - 60 ? x + gap : x - gap - w));
+    pop.style.left = `${left}px`;
+    pop.style.top = `${Math.max(4, Math.min(H - h - 4, yc - h / 2))}px`;
+  };
+  const openCard = (target) => {
+    pinned = target;
+    focus('pinId', target?.dot ? target.dot.id : -1);
+    if (!target) { pop.hidden = true; return; }
+    pop.innerHTML = target.dot ? dotCard(target.dot) : monthCard(target.i);
+    place();
+    follow();
+  };
+  // 카드가 열려 있는 동안 매 프레임 자리를 맞춘다. 기간 이동뿐 아니라 창 크기 변경(구간이 고정돼 range 이벤트가 없다)·
+  // 가격 축 드래그처럼 좌표만 바뀌는 조작에도 따라가게. 카드를 닫거나 화면을 떠나면 멈춘다
+  let raf = 0;
+  const follow = () => {
+    if (raf) return;
+    const tick = () => {
+      if (!pinned || !pop.isConnected) { raf = 0; return; }
+      place();
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+  };
+  const setAnchor = (dot) => {
+    anchor = dot;
     if (anchorLine) line.removePriceLine(anchorLine);
     anchorLine = anchor ? line.createPriceLine({ price: anchor.y, color: css('--ink-2'), lineWidth: 1, lineStyle: LWC.LineStyle.Dashed, axisLabelVisible: true, title: '기준' }) : null;
     focus('anchorId', anchor ? anchor.id : -1);
-    showHead(p.time != null ? byTime.get(p.time) ?? null : null, dot);
+  };
+  pop.addEventListener('click', (e) => {
+    if (e.target.closest('.pop-x')) openCard(null);
+    else if (e.target.closest('[data-anchor]') && pinned?.dot) {
+      setAnchor(anchor === pinned.dot ? null : pinned.dot);
+      openCard(pinned); showHead(null);
+    }
+  });
+  chart.subscribeClick((p) => {
+    if (o.mode === 'dots') {
+      const dot = nearest(p);
+      openCard(dot && dot !== pinned?.dot ? { dot } : null);
+      return;
+    }
+    const i = p.time != null ? byTime.get(p.time) : null;
+    const has = i != null && (shownT.some((q) => q.ym === s[i].ym) || shownJ.some((q) => q.ym === s[i].ym));
+    openCard(has && pinned?.i !== i ? { i } : null);
   });
 
   app.querySelectorAll('#apMode button').forEach((btn) => btn.addEventListener('click', () => {
     o.mode = btn.dataset.m;
     document.getElementById('apKind').textContent = o.mode === 'dots' ? '매매 실거래' : '매매 월봉';
+    document.getElementById('apJKind').textContent = o.mode === 'dots' ? '전세 실거래·이동평균' : '전세 월봉·이동평균';
+    openCard(null);
     app.querySelectorAll('#apMode button').forEach((x) => x.classList.toggle('on', x === btn));
     apply(); showHead(null);
   }));
@@ -489,6 +584,8 @@ function aptChart(sel, allTrades, allJeonse) {
     o[k] = !o[k];
     btn.classList.toggle('on', o[k]);
     apply(); showHead(null);
+    if (pinned?.dot && !(pinned.dot.kind === '매매' ? shownT : shownJ).includes(pinned.dot)) openCard(null);
+    else openCard(pinned);
   }));
   apply();
   bindRange(chart, 'apRange', last);
@@ -693,7 +790,7 @@ async function viewOverview(group, id) {
     <h1>${esc(group)} 지역별 시세 트렌드 ${tip('실거래 평당가의 3개월 이동평균 기준 (단지 구성 보정, 신고 진행 중인 지난달·통매각 같은 일괄 거래 제외). 거래량은 최근 3개월을 36개월 평균과 비교해요. 신고가 비율은 최근 3개월 거래 중 같은 단지·평형의 이전 최고가를 넘은 거래 비중으로, 시장이 달아오르면 가장 먼저 올라가요.')}</h1>
     <p class="lead" id="ovLead"></p>
     <div class="card">
-      <div class="row" style="margin-bottom:8px"><h2 style="margin:0">국면 지도 — 가격 변화 × 거래량 ${tip('벌집순환모형: 거래량이 먼저 움직이고 가격이 따라와요. 오른쪽 아래(불황) → 가운데 오른쪽(회복진입) → 오른쪽 위(회복) 순서로 옮겨가는 지역을 주목하세요. 점에 마우스를 올리면 6개월 전 → 3개월 전 → 지금 이동 경로가 보이고, 누르면 지역 화면으로 가요.')}</h2><span class="spacer"></span><label class="muted" style="font-size:12px"><input type="checkbox" id="trail" ${state.trail ? 'checked' : ''}> 모든 지역 이동 경로</label></div>
+      <div class="row" style="margin-bottom:8px"><h2 style="margin:0">국면 지도 — 가격 변화 × 거래량 ${tip('벌집순환모형: 거래량이 먼저 움직이고 가격이 따라와요. 오른쪽 아래(불황) → 가운데 오른쪽(회복진입) → 오른쪽 위(회복) 순서로 옮겨가는 지역을 주목하세요. 점에 마우스를 올리면 6개월 전 → 3개월 전 → 지금 이동 경로가 보이고, 누르면 지역 화면으로 가요. ‘모든 지역 최근 이동 방향’을 켜면 지역마다 3개월 전 → 지금 움직임을 화살표로 보여줘요.')}</h2><span class="spacer"></span><label class="muted" style="font-size:12px"><input type="checkbox" id="trail" ${state.trail ? 'checked' : ''}> 모든 지역 최근 이동 방향</label></div>
       <div class="chart-box tall"><canvas id="phaseMap"></canvas></div>
     </div>
     <div id="macro"></div>
@@ -740,7 +837,7 @@ async function viewOverview(group, id) {
       .map((r) => ({ x: r.ind.volVsAvg * 100, y: r.ind.chg3m * 100, label: r.name.replace(/ \(.+\)/, ''), code: r.code, phase: r.ind.phase,
         trail: (r.ind.trail || []).map((t) => ({ x: t.volVsAvg * 100, y: t.chg3m * 100, ym: t.ym })) }));
     map.data.datasets[0].data = pts;
-    map.data.datasets[1].data = state.trail ? pts.flatMap((p) => p.trail) : []; // 전체 경로를 볼 때만 축 범위에 넣는다
+    map.data.datasets[1].data = state.trail ? pts.flatMap((p) => p.trail.slice(-1)) : []; // 전체 보기에서 그리는 3개월 전 위치만 축 범위에 넣는다
     map.update('none');
   };
   document.getElementById('trail').addEventListener('change', (e) => { state.trail = e.target.checked; refreshMap(); });
@@ -830,8 +927,12 @@ function phaseMap(canvas) {
     beforeDatasetsDraw(c) {
       const { ctx, chartArea: a, scales: { x, y } } = c;
       ctx.save();
-      ctx.strokeStyle = css('--axis'); ctx.lineWidth = 1;
       const x0 = x.getPixelForValue(0), y0 = y.getPixelForValue(0);
+      // 가격이 오른 위쪽은 옅은 빨강, 내린 아래쪽은 옅은 파랑으로 깔아 국면 경계(0)가 한눈에 보이게
+      ctx.fillStyle = alpha(css('--up'), 0.04); ctx.fillRect(a.left, a.top, a.right - a.left, y0 - a.top);
+      ctx.fillStyle = alpha(css('--down'), 0.04); ctx.fillRect(a.left, y0, a.right - a.left, a.bottom - y0);
+      // 국면 경계 십자선: 격자보다 진하게
+      ctx.strokeStyle = css('--muted'); ctx.lineWidth = 1;
       ctx.beginPath(); ctx.moveTo(x0, a.top); ctx.lineTo(x0, a.bottom); ctx.moveTo(a.left, y0); ctx.lineTo(a.right, y0); ctx.stroke();
       ctx.fillStyle = css('--muted'); ctx.font = `12px ${Chart.defaults.font.family}`;
       // 축이 데이터에 맞춰 잘리므로, 화면에 충분히 보이는 사분면에만 이름을 쓴다
@@ -844,24 +945,54 @@ function phaseMap(canvas) {
       if (left && top) ctx.fillText('② 호황기 · 가격↑ 거래↓', a.left + 8, a.top + 16);
       if (left && bottom) ctx.fillText('④ 침체기 · 가격↓ 거래↓', a.left + 8, a.bottom - 8);
       ctx.restore();
-      // 이동 경로: 6개월 전 → 3개월 전 → 지금. 전체 보기가 아니면 마우스를 올린 지역만 (축 밖은 잘림)
+      // 이동 경로. 마우스를 올린 지역은 6개월 전 → 3개월 전 → 지금 전체를, 전체 보기는 25개 선이 엉키지 않게
+      // 최근 구간(3개월 전 → 지금)만 화살표로. 오래된 구간일수록 옅고 가늘게, 강조 중엔 나머지를 흐리게 (축 밖은 잘림)
       ctx.save();
       ctx.beginPath(); ctx.rect(a.left, a.top, a.right - a.left, a.bottom - a.top); ctx.clip();
-      ctx.strokeStyle = css('--series-1'); ctx.fillStyle = css('--series-1'); ctx.lineWidth = 1.5;
-      for (const p of c.data.datasets[0].data) {
-        const one = p.code === c.$hover;
-        if (!p.trail?.length || !(state.trail || one)) continue;
-        ctx.globalAlpha = one ? 0.9 : 0.3;
-        const px = [...p.trail, p].map((t) => [x.getPixelForValue(t.x), y.getPixelForValue(t.y)]);
-        ctx.beginPath();
-        px.forEach(([px1, py1], i) => ctx[i ? 'lineTo' : 'moveTo'](px1, py1));
-        ctx.stroke();
-        if (one) {
-          ctx.font = `11px ${Chart.defaults.font.family}`; ctx.textAlign = 'center';
+      ctx.strokeStyle = css('--series-1'); ctx.fillStyle = css('--series-1'); ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+      const hover = c.$hover;
+      const paths = c.data.datasets[0].data.filter((p) => p.trail?.length && (state.trail || p.code === hover));
+      paths.sort((p, q) => (p.code === hover) - (q.code === hover)); // 강조할 지역은 맨 위에
+      for (const p of paths) {
+        const one = p.code === hover, dim = hover != null && !one;
+        const trail = one ? p.trail : p.trail.slice(-1);
+        const px = [...trail, p].map((t) => [x.getPixelForValue(t.x), y.getPixelForValue(t.y)]);
+        const n = px.length - 1;
+        let head = null;
+        for (let i = 0; i < n; i++) {
+          const k = (i + 1) / n; // 1에 가까울수록 최근 구간 (전체 보기의 한 구간은 1)
+          let [x1, y1] = px[i], [x2, y2] = px[i + 1];
+          const len = Math.hypot(x2 - x1, y2 - y1);
+          if (i === n - 1) { // 마지막 구간은 지금 점(반지름 5 + 테두리) 앞에서 멈추고 화살표
+            if (len < 14) continue;
+            const ux = (x2 - x1) / len, uy = (y2 - y1) / len;
+            x2 -= ux * 9; y2 -= uy * 9;
+            head = [x2, y2, ux, uy];
+          }
+          ctx.globalAlpha = (one ? 0.35 + 0.6 * k : 0.55) * (dim ? 0.3 : 1);
+          ctx.lineWidth = one ? 1.5 + k : 1.25;
+          ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+        }
+        if (head) {
+          const [tx, ty, ux, uy] = head, s1 = one ? 7 : 5, w = s1 * 0.6;
+          ctx.beginPath();
+          ctx.moveTo(tx, ty);
+          ctx.lineTo(tx - ux * s1 - uy * w, ty - uy * s1 + ux * w);
+          ctx.lineTo(tx - ux * s1 + uy * w, ty - uy * s1 - ux * w);
+          ctx.closePath(); ctx.fill();
+        }
+        if (one) { // 과거 위치: 빈 원 + 시점 (배경색 테두리로 선 위에서도 읽히게)
+          ctx.globalAlpha = 1; ctx.lineWidth = 1.5;
+          ctx.font = `11px ${Chart.defaults.font.family}`; ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
           p.trail.forEach((t, i) => {
-            ctx.beginPath(); ctx.arc(px[i][0], px[i][1], 3, 0, 7); ctx.fill();
-            ctx.fillText(fmtYm(t.ym), px[i][0], px[i][1] - 8);
+            const [cx, cy] = px[i];
+            ctx.beginPath(); ctx.arc(cx, cy, 3.5, 0, 7);
+            ctx.fillStyle = css('--surface'); ctx.fill(); ctx.stroke();
+            ctx.lineWidth = 3; ctx.strokeStyle = css('--surface'); ctx.strokeText(fmtYm(t.ym), cx, cy - 6);
+            ctx.fillStyle = css('--ink-2'); ctx.fillText(fmtYm(t.ym), cx, cy - 6);
+            ctx.lineWidth = 1.5; ctx.strokeStyle = css('--series-1');
           });
+          ctx.fillStyle = css('--series-1');
         }
       }
       ctx.restore();
@@ -900,7 +1031,7 @@ function phaseMap(canvas) {
     data: { datasets: [
       { data: [], pointRadius: 5, pointHoverRadius: 7, backgroundColor: css('--series-1'), borderColor: css('--surface'), borderWidth: 2 },
       // 경로의 과거 위치 (축 범위 계산에도 포함)
-      { data: [], pointRadius: 2, pointHoverRadius: 2, backgroundColor: css('--series-1-soft'), borderWidth: 0 },
+      { data: [], pointRadius: 0, pointHoverRadius: 0 }, // 점은 그리지 않는다 (경로는 플러그인이 그림)
     ] },
     options: {
       scales: {
@@ -1161,7 +1292,7 @@ async function viewApt(code, key, id) {
       </div>
       <div class="card">
         <div class="tv-head">
-          <div class="tv-label">${areaSel}㎡ 매매가 <span class="muted">6개월 이동평균</span> ${tip('점 하나가 실거래 1건이고, 빨간 테두리는 신고가(같은 평형 이전 최고가를 넘은 거래)예요. 점을 누르면 그 거래가 기준이 되어 다른 거래·시점의 등락률을 보여줘요 (빈 곳을 누르면 해제). 월봉은 그 달 첫 거래→마지막 거래가 몸통, 최저~최고가 꼬리예요. 아래 칸은 월별 매매 건수. 1~3층을 끄면 점·월봉·건수에서만 빠지고 이동평균은 그대로예요.')}</div>
+          <div class="tv-label">${areaSel}㎡ 매매가 <span class="muted">6개월 이동평균</span> ${tip('점 하나가 실거래 1건이고, 빨간 테두리는 신고가(같은 평형 이전 최고가를 넘은 거래)예요. 점을 누르면 그 거래의 상세 정보가 나오고, 카드에서 기준으로 잡으면 다른 거래·시점의 등락률을 보여줘요. 월봉은 그 달 첫 거래→마지막 거래가 몸통, 최저~최고가 꼬리예요 (전세 월봉은 오른 달은 채움, 내린 달은 속 빈 막대). 아래 칸은 월별 매매 건수. 1~3층을 끄면 점·월봉·건수에서만 빠지고 이동평균은 그대로예요.')}</div>
           <div class="tv-value num" id="apValue"></div>
           <div class="tv-sub num" id="apSub"></div>
         </div>
@@ -1172,12 +1303,12 @@ async function viewApt(code, key, id) {
           <div class="chips" id="apToggle">
             <span class="chip-static"><i id="apSwatch"></i>매매 6개월 이동평균</span>
             <span class="chip-static"><i class="dot" style="background:${css('--series-1')}"></i><span id="apKind">${state.ap.mode === 'dots' ? '매매 실거래' : '매매 월봉'}</span></span>
-            <button data-s="jeonse" class="${state.ap.jeonse ? 'on' : ''}" title="눌러서 켜고 끄기"><i class="dot" style="background:${css('--series-2')}"></i>전세 실거래·이동평균</button>
+            <button data-s="jeonse" class="${state.ap.jeonse ? 'on' : ''}" title="눌러서 켜고 끄기"><i class="dot" style="background:${css('--series-2')}"></i><span id="apJKind">${state.ap.mode === 'dots' ? '전세 실거래·이동평균' : '전세 월봉·이동평균'}</span></button>
             <button data-s="low" class="${state.ap.low ? 'on' : ''}" title="저층(1~3층·지하)은 시세보다 낮게 거래되는 경우가 많아요. 눌러서 켜고 끄기">1~3층 포함</button>
           </div>
         </div>
-        <div class="tv-box" id="ap"></div>
-        <p class="muted tv-note">점을 누르면 그 거래 대비 등락률을 볼 수 있어요 · <span class="up">빨간 테두리</span> = 신고가</p>
+        <div class="tv-stage"><div class="tv-box" id="ap"></div><div class="tv-pop" id="apPop" hidden></div></div>
+        <p class="muted tv-note">점이나 월봉을 누르면 상세 정보가 나와요 · <span class="up">빨간 테두리</span> = 신고가</p>
       </div>
       <div class="grid2">
         <div class="card table-wrap"><h2>최근 매매</h2><table><thead><tr><th class="l">계약일</th><th>층</th><th>거래가</th><th>평당가</th><th class="l">유형</th></tr></thead><tbody>

@@ -184,6 +184,29 @@ body.busy .top::after {
 .tv-ctrl { margin: 12px 0 8px; gap: 8px; }
 .tv-box { position: relative; height: 440px; }
 .tv-note { font-size: 12px; margin: 8px 0 0; }
+/* 점·월봉을 눌렀을 때 뜨는 상세 카드 */
+.tv-stage { position: relative; }
+.tv-pop {
+  position: absolute; z-index: 5; width: 264px; padding: 12px 14px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18); font-size: 12.5px;
+}
+.tv-pop[hidden] { display: none; }
+.pop-head { display: flex; align-items: center; gap: 8px; color: var(--ink-2); }
+.pop-kind { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; color: var(--ink); }
+.pop-kind .dot { width: 8px; height: 8px; border-radius: 50%; }
+.pop-x { margin-left: auto; border: 0; background: transparent; color: var(--muted); font-size: 18px; line-height: 1; cursor: pointer; padding: 0 2px; }
+.pop-x:hover { color: var(--ink); }
+.pop-value { font-size: 20px; font-weight: 700; letter-spacing: -0.02em; margin: 4px 0 8px; }
+.pop-rows { margin: 0; display: grid; gap: 4px; }
+.pop-rows > div { display: flex; justify-content: space-between; gap: 12px; }
+.pop-rows dt { color: var(--muted); white-space: nowrap; }
+.pop-rows dd { margin: 0; text-align: right; color: var(--ink); white-space: nowrap; }
+.pop-btn {
+  width: 100%; margin-top: 10px; padding: 6px 0; border-radius: 8px; cursor: pointer; font: inherit; font-size: 12px;
+  border: 1px solid var(--border); background: var(--accent-wash); color: var(--ink);
+}
+.pop-btn:hover { border-color: var(--axis); }
 .chips { display: flex; gap: 6px; flex-wrap: wrap; }
 .chips button {
   display: inline-flex; align-items: center; gap: 6px; cursor: pointer;
