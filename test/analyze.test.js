@@ -102,6 +102,14 @@ test('일괄 거래 기준 미만이거나 중개거래면 그대로 둔다', ()
   assert.ok(an.markBulk(r(10, '직거래')).every((x) => x.bulk));
 });
 
+test('일괄 거래 표시는 입력 행을 고치지 않는다 (브라우저 캐시를 여러 화면이 같이 씀)', () => {
+  const rows = Array.from({ length: 30 }, () => ({ dong: '동', apt: 'B', date: '2025-07-09', area: 18, price: 27000, floor: 20, kind: '직거래' }));
+  an.markBulk(rows);
+  an.regionSummary(yms, rows, []);
+  an.apartmentList(rows);
+  assert.ok(rows.every((r) => !('bulk' in r)));
+});
+
 test('국면의 거래량은 장기(36개월 중위) 대비: 직전 3개월에 거래가 몰렸어도 평소 수준이면 거래↓로 보지 않는다', () => {
   // 40개월. 마지막 달(39)은 제외 → 최근 3개월 36~38은 평소(10건), 직전 3개월 33~35만 급증, 가격은 상승
   const ym40 = Array.from({ length: 40 }, (_, i) => `${2023 + Math.floor(i / 12)}${String(i % 12 + 1).padStart(2, '0')}`);

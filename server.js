@@ -25,7 +25,7 @@ const routes = [
     if (!regionOf(code)) throw notFound();
     // 지표(고점·장기 평균 거래량)는 5년으로 계산하고, 시계열은 최근 25개월만 보낸다
     const months = clampMonths(q.get('months'), 60);
-    const [{ yms, rows }, rent] = [await getRange('trade', code, months), await getRange('rent', code, months)];
+    const [{ yms, rows }, rent] = await Promise.all([getRange('trade', code, months), getRange('rent', code, months)]);
     const { series, indicators } = an.regionSummary(yms, rows, rent.rows);
     return { code, series: series.slice(-25).map(({ ym, ma, count }) => ({ ym, ma, count })), indicators };
   }],
