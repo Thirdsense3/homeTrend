@@ -10,7 +10,7 @@ cp .env.example .env   # MOLIT_API_KEY 입력 (없으면 데모 데이터로 동
 npm start              # http://localhost:3000
 ```
 
-의존성 없음 (Node 16+). 테스트: `npm test` (Node 18+)
+의존성 없음 (Node 18+). 테스트: `npm test`
 
 **사이트:** https://thirdsense3.github.io/homeTrend/ — 매일 04:00(KST) 자동 갱신
 

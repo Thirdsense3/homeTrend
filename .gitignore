@@ -6,3 +6,4 @@ data/cache/
 # 전역 gitignore가 *.html을 무시하므로 사이트 페이지는 예외 처리
 !public/index.html
 dist/
+.claude/worktrees/
