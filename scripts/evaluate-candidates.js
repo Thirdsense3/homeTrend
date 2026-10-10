@@ -1,6 +1,6 @@
 // 빌드된 지역 JSON으로 과거 시점 점수와 이후 가격 변화의 관계를 탐색한다.
 // node scripts/evaluate-candidates.js [데이터 디렉터리=dist/data] [예측기간(개월)=60]
-// 각 시점 점수에는 그 시점까지의 거래만 사용한다. 결과는 예측 보증이 아니다.
+// 각 시점 점수에는 그 시점까지의 계약일을 사용한다. 신고일은 없어 당시 공개 여부는 복원하지 못한다. 결과는 예측 보증이 아니다.
 const fs = require('fs');
 const path = require('path');
 const an = require('../lib/analyze');
@@ -42,5 +42,5 @@ const quarter = Math.ceil(samples.length/4);
 console.log(JSON.stringify({ horizonMonths:horizon, sampleCount:samples.length, skippedMissing,
   status:samples.length ? 'exploratory' : 'insufficient_history',
   meanReturn:mean(samples), topQuarterReturn:mean(byScore.slice(0,quarter)), bottomQuarterReturn:mean(quarter ? byScore.slice(-quarter) : []),
-  limitations:['실험 가중치; 보정·확률 교정 없음','동일 지역의 중첩 기간은 독립 표본이 아님','상위/하위 평균은 시점별 순위가 아닌 전체 표본 요약','공급·교통·정비사업 미반영','전용면적 구성이 바뀌는 경우 보정 지수에도 추정 오차가 있음']
+  limitations:['계약일 기준; 신고일 부재로 당시 미신고 거래와 사후 정정·취소가 포함될 수 있음(룩어헤드)','실험 가중치; 보정·확률 교정 없음','동일 지역의 중첩 기간은 독립 표본이 아님','상위/하위 평균은 시점별 순위가 아닌 전체 표본 요약','공급·교통·정비사업 미반영','전용면적 구성이 바뀌는 경우 보정 지수에도 추정 오차가 있음']
 },null,2));

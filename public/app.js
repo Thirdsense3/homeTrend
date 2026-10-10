@@ -24,6 +24,8 @@ function unpack(p, months, code) {
   const yms = p.yms.slice(-months);
   const from = Number(yms[0] + '01');
   const apts = p.apts;
+  // 조회 기간 밖 단지도 포함해 옛 링크와 관심단지의 주소를 확인한다.
+  (state.complexes ||= {})[code] = apts.map(([dong, apt, built, jibun]) => ({ dong, apt, jibun }));
   const trades = p.t.filter((r) => r[1] >= from).map(([i, d, a, floor, price, direct, source]) => ({
     dong: apts[i][0], apt: apts[i][1], built: apts[i][2], jibun: apts[i][3],
     sourceApt: p.names?.[source] || apts[i][1],
@@ -56,8 +58,8 @@ async function getRegion(code, months, brokerOnly) {
   return { ...summary, apartments: A.apartmentList(trades) };
 }
 async function getApt(code, key, months) {
-  key = A.canonicalKey(code, key);
   const { yms, trades, rents } = await getRaw(code, months);
+  key = A.canonicalKey(code, key, state.complexes?.[code]);
   const t = A.markBulk(trades.filter((x) => A.aptKey(x) === key)).sort((a, b) => a.date.localeCompare(b.date));
   if (!t.length) throw new Error('해당 기간에 거래가 없는 단지입니다');
   if (t.every((x) => x.bulk)) throw new Error('해당 기간에 일괄 거래(통매각)만 있어 시세를 계산할 수 없는 단지입니다');
@@ -132,7 +134,7 @@ const watch = {
       const merged = new Map();
       for (const w of raw) {
         if (!w || typeof w.code !== 'string' || typeof w.key !== 'string') continue;
-        const key = A.canonicalKey(w.code, w.key);
+        const key = A.canonicalKey(w.code, w.key, w.jibun ? [{ dong: w.key.split('|')[0], apt: w.key.split('|').slice(1).join('|'), jibun: w.jibun }] : state.complexes?.[w.code]);
         const old = merged.get(`${w.code}:${key}`);
         merged.set(`${w.code}:${key}`, { ...w, key, name: key.split('|').slice(1).join('|'), seen: [old?.seen, w.seen].filter(Boolean).sort().pop() });
       }
@@ -140,16 +142,16 @@ const watch = {
     } catch (_) { return []; }
   },
   save(l) { try { localStorage.setItem('homeTrend.watch', JSON.stringify(l)); } catch (_) { /* 저장 불가 */ } },
-  has(code, key) { key = A.canonicalKey(code, key); return this.list().some((w) => w.code === code && w.key === key); },
+  has(code, key) { key = A.canonicalKey(code, key, state.complexes?.[code]); return this.list().some((w) => w.code === code && w.key === key); },
   toggle(item) {
-    item = { ...item, key: A.canonicalKey(item.code, item.key) };
+    item = { ...item, key: A.canonicalKey(item.code, item.key, state.complexes?.[item.code]) };
     let l = this.list();
     l = this.has(item.code, item.key) ? l.filter((w) => !(w.code === item.code && w.key === item.key)) : [...l, item];
     this.save(l);
     return this.has(item.code, item.key);
   },
   markSeen(code, key, date) {
-    key = A.canonicalKey(code, key);
+    key = A.canonicalKey(code, key, state.complexes?.[code]);
     const l = this.list();
     const w = l.find((x) => x.code === code && x.key === key);
     if (w && date && !(w.seen >= date)) { w.seen = date; this.save(l); }
@@ -588,10 +590,28 @@ applyTheme();
 
 // ---------- 전체 검색 (상단): 지역 이름 + 모든 지역의 단지 ----------
 // 목록은 처음 검색창을 누를 때 한 번 받는다 (정적 사이트: 빌드 때 만든 data/search.json)
-const getSearch = () => (state.search ||= api(STATIC ? 'data/search.json' : '/api/search').catch((e) => { state.search = null; throw e; }));
+const getSearch = () => (state.search ||= api(STATIC ? 'data/search.json' : '/api/search').then(async (idx) => {
+  // v1 검색 목록에는 주소가 없다. 별칭이 있는 지역만 원본으로 확인해 중복을 없앤다.
+  await Promise.all(Object.entries(idx.regions).map(async ([code, entries]) => {
+    if (!entries.some(([dong, apt, , jibun]) => jibun === undefined && window.ComplexAliases.some((a) => a.code === code && a.dong === dong && a.names.includes(apt)))) return;
+    try { idx.regions[code] = A.searchEntries((await getRaw(code, 36)).trades); } catch (_) { /* 원본 조회 실패 시 기존 검색 결과 유지 */ }
+  }));
+  return idx;
+}).catch((e) => { state.search = null; throw e; }));
 const norm = (s) => String(s).toLowerCase().replace(/\s+/g, '');
 function searchFlat(idx) {
-  return state.meta.regions.flatMap((r) => (idx.regions[r.code] || []).map(([dong, apt, cnt]) => ({ r, dong, apt, cnt, na: norm(A.apartmentNames(r.code, dong, apt).join(' ')), nd: norm(dong), nr: norm(r.name) })));
+  return state.meta.regions.flatMap((r) => {
+    const entries = idx.regions[r.code] || [];
+    const grouped = new Map();
+    for (const [dong, name, cnt, jibun] of entries) {
+      const key = A.aptKey(A.normalizeRows(r.code, [{ dong, apt: name, jibun }])[0]);
+      const apt = key.slice(dong.length + 1);
+      const old = grouped.get(key);
+      if (old) { old.cnt += cnt; continue; }
+      grouped.set(key, { r, dong, apt, cnt, na: norm(A.apartmentNames(r.code, dong, apt, jibun).join(' ')), nd: norm(dong) });
+    }
+    return [...grouped.values()];
+  });
 }
 // 지역 → 단지명이 검색어로 시작 → 단지명에 포함 → 동 이름에 포함 순, 같으면 거래 많은 순
 function searchMatch(flat, q) {
@@ -601,7 +621,7 @@ function searchMatch(flat, q) {
   const apts = [];
   for (const e of flat) {
     const at = e.na.indexOf(n);
-    if (at < 0 && !e.nd.includes(n) && !e.nr.includes(n)) continue;
+    if (at < 0 && !e.nd.includes(n)) continue;
     apts.push({ ...e, score: at === 0 ? 0 : at > 0 ? 1 : 2 });
   }
   apts.sort((x, y) => x.score - y.score || y.cnt - x.cnt);
@@ -673,7 +693,7 @@ function initRegionJump() {
   select.onchange = () => { if (select.value) location.hash = `#/r/${select.value}`; select.value = ''; };
 }
 const OV_COLS = [
-  ['name', '지역', (r) => r.name, (r) => `<button class="star ${regionLikes.has(r.code) ? 'on' : ''}" data-like-region="${r.code}" aria-label="${esc(r.name)} 좋아요" aria-pressed="${regionLikes.has(r.code)}">♥</button> <a href="#/r/${r.code}">${esc(r.name)}</a>`],
+  ['name', '지역', (r) => r.name, (r) => `<button class="star ${r.liked ? 'on' : ''}" data-like-region="${r.code}" aria-label="${esc(r.name)} 좋아요" aria-pressed="${!!r.liked}">♥</button> <a href="#/r/${r.code}">${esc(r.name)}</a>`],
   ['current', '평당가 (3개월 평균)', (r) => r.ind?.current, (r) => fmtMan(r.ind?.current)],
   ['eq84', '84㎡ 환산', (r) => r.ind?.current, (r) => (r.ind?.current ? fmtEok(Math.round(r.ind.current * 84 / PYEONG / 100) * 100) : '–')],
   ['chg3m', '3개월', (r) => r.ind?.chg3m, (r) => delta(r.ind?.chg3m)],
@@ -748,7 +768,8 @@ async function viewOverview(group, id) {
   const visibleRows = () => {
     const query = norm(document.getElementById('regionQuery').value);
     const selected = [...app.querySelectorAll('input[name="regionCode"]:checked')].map((x) => x.value);
-    return rows.filter((r) => norm(r.name).includes(query) && (!document.getElementById('likedRegions').checked || regionLikes.has(r.code)) && (!selected.length || selected.includes(r.code)));
+    const liked = new Set(regionLikes.list());
+    return rows.map((r) => ({ ...r, liked: liked.has(r.code) })).filter((r) => norm(r.name).includes(query) && (!document.getElementById('likedRegions').checked || liked.has(r.code)) && (!selected.length || selected.includes(r.code)));
   };
   const render = () => {
     const rows = visibleRows();
@@ -1113,10 +1134,12 @@ async function viewRegion(code, id) {
   });
 
   const thead = app.querySelector('thead'), tbody = app.querySelector('tbody'), q = document.getElementById('q');
-  const cols = [...APT_COLS, ['star', '', null, (r) => `<button class="star ${watch.has(code, r.key) ? 'on' : ''}" data-key="${esc(r.key)}" title="관심단지에 좋아요 (이 브라우저에 저장)">★</button>`]];
+  let watched = new Set();
+  const cols = [...APT_COLS, ['star', '', null, (r) => `<button class="star ${watched.has(r.key) ? 'on' : ''}" data-key="${esc(r.key)}" title="관심단지에 좋아요 (이 브라우저에 저장)">★</button>`]];
   const render = () => {
+    watched = new Set(watch.list().filter((w) => w.code === code).map((w) => w.key));
     const term = q.value.trim();
-    const rows = d.apartments.filter((r) => !term || A.apartmentNames(code, r.dong, r.apt).some((n) => norm(n).includes(norm(term))) || norm(r.dong).includes(norm(term)));
+    const rows = d.apartments.filter((r) => !term || A.apartmentNames(code, r.dong, r.apt, r.jibun).some((n) => norm(n).includes(norm(term))) || norm(r.dong).includes(norm(term)));
     thead.innerHTML = tableHead(cols, 'apts', state.sort.apts);
     document.getElementById('aptSort').innerHTML = sortSelect(cols, 'apts', state.sort.apts);
     tbody.innerHTML = sortRows(rows, cols, state.sort.apts).slice(0, 300)
@@ -1128,7 +1151,7 @@ async function viewRegion(code, id) {
     const star = e.target.closest('.star');
     if (star) {
       const a = d.apartments.find((x) => x.key === star.dataset.key);
-      star.classList.toggle('on', watch.toggle({ code, key: a.key, name: a.apt, region: region.name, seen: a.lastDate }));
+      star.classList.toggle('on', watch.toggle({ code, key: a.key, name: a.apt, jibun: a.jibun, region: region.name, seen: a.lastDate }));
       return;
     }
     const tr = e.target.closest('tr[data-href]');
@@ -1139,15 +1162,16 @@ async function viewRegion(code, id) {
 
 // ---------- 단지 상세 ----------
 async function viewApt(code, key, id) {
-  key = A.canonicalKey(code, key);
   const region = requireRegion(code);
   const opts = monthOpts(APT_MONTHS);
-  const months = getMonths(`apt.${code}.${key}`, opts, 36);
+  const monthView = `apt.${code}.${key}`;
+  const months = getMonths(monthView, opts, 36);
   showLoading(`<div class="crumb"><a href="#/r/${code}">${esc(region.name)}</a> ›</div>${skeleton('불러오는 중… (처음 보는 기간은 30초 정도 걸릴 수 있어요)')}`);
   const d = await getApt(code, key, months);
   if (isStale(id)) return;
   destroyCharts();
   const { apt } = d;
+  key = apt.key;
   const areaKey = `${code}:${key}`; // 다른 구에 같은 동·단지명이 있을 수 있어 지역 코드까지 포함
   let areaSel = state.aptArea?.[areaKey] || d.areas[0].area;
   if (!d.areas.some((a) => a.area === areaSel)) areaSel = d.areas[0].area;
@@ -1173,8 +1197,8 @@ async function viewApt(code, key, id) {
       <span class="muted" id="copied" style="font-size:12px"></span>
     </p>
     <div class="row" style="margin-bottom:16px"><span class="muted">전용면적</span><div class="seg" id="areas">${d.areas.map((a) => `<button data-a="${a.area}" class="${a.area === areaSel ? 'on' : ''}">${a.area}㎡ <span class="muted">(매매 ${a.count}건)</span></button>`).join('')}</div></div>
-    <p class="muted">조회 기간에 매매 또는 전세 거래가 있는 전용면적입니다. 원본 면적을 소수 둘째 자리까지 구분합니다.${A.apartmentNames(code, apt.dong, apt.name).length > 1 ? ` 원본 명칭: ${esc(A.apartmentNames(code, apt.dong, apt.name).filter((n) => n !== apt.name).join(', '))}` : ''}</p><div id="areaView"></div>`;
-  bindMonths(`apt.${code}.${key}`);
+    <p class="muted">조회 기간에 매매 또는 전세 거래가 있는 전용면적입니다. 원본 면적을 소수 둘째 자리까지 구분합니다.${A.apartmentNames(code, apt.dong, apt.name, apt.jibun).length > 1 ? ` 원본 명칭: ${esc(A.apartmentNames(code, apt.dong, apt.name, apt.jibun).filter((n) => n !== apt.name).join(', '))}` : ''}</p><div id="areaView"></div>`;
+  bindMonths(monthView);
   app.querySelectorAll('.copy-name').forEach((a) => a.addEventListener('click', () => {
     navigator.clipboard?.writeText(apt.name).then(() => {
       document.getElementById('copied').textContent = `'${apt.name}' 복사됨 — 검색창에 붙여넣으세요`;
@@ -1183,7 +1207,7 @@ async function viewApt(code, key, id) {
   const lastDate = d.trades[d.trades.length - 1].date;
   watch.markSeen(code, key, lastDate); // 단지 화면을 열면 새 거래 표시를 지운다
   document.getElementById('star').addEventListener('click', (e) => {
-    e.target.classList.toggle('on', watch.toggle({ code, key, name: apt.name, region: region.name, seen: lastDate }));
+    e.target.classList.toggle('on', watch.toggle({ code, key, name: apt.name, jibun: apt.jibun, region: region.name, seen: lastDate }));
   });
   document.querySelectorAll('#areas button').forEach((b) => b.addEventListener('click', () => {
     areaSel = b.dataset.a;
@@ -1248,6 +1272,12 @@ async function viewApt(code, key, id) {
 
 // ---------- 관심단지 ----------
 async function viewWatch(id) {
+  const saved = watch.list();
+  if (saved.length) {
+    showLoading(skeleton('관심단지를 확인하는 중…'));
+    await Promise.all([...new Set(saved.map((w) => w.code))].map((code) => getRaw(code, 36).catch(() => null)));
+    if (isStale(id)) return;
+  }
   const list = watch.list();
   if (!list.length) {
     app.innerHTML = `<h1>관심단지</h1><div class="card muted">아직 관심단지가 없어요. 지역 화면의 단지 목록이나 단지 화면에서 ★를 눌러 추가하세요.</div>`;
