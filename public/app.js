@@ -18,6 +18,9 @@ const getMeta = () => api(STATIC ? 'data/meta.json' : '/api/meta');
 const getOverview = (code) => api(STATIC ? `data/overview/${code}.json` : `/api/overview/${code}`);
 // 금리·주택가격 전망 심리 (한국은행). 키가 없어 파일이 없으면 null → 카드를 그리지 않는다
 const getMacro = () => (state.macro ||= api(STATIC ? 'data/macro.json' : '/api/macro').catch(() => null));
+// 주간 가격지수·매입자 거주지 (한국부동산원). 키가 없어 파일이 없으면 null → 해당 칸·카드를 그리지 않는다
+const getReb = () => (state.rebPromise ||= api(STATIC ? 'data/reb.json' : '/api/reb').then((d) => (state.reb = d)).catch(() => (state.reb = null)));
+const rebInd = (code) => state.reb?.regions?.[code]?.ind;
 const getForecasts = () => (state.forecastPromise ||= api(STATIC ? 'data/forecasts.json' : '/api/forecasts').then((d) => (state.forecasts = d)).catch(() => (state.forecasts = { status: 'unavailable', regions: {}, validation: {} })));
 
 const dateStr = (n) => { const s = String(n); return `${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}`; };
@@ -95,6 +98,7 @@ function delta(x, d = 1) {
   return x > 0 ? `<span class="up">▲ ${(x * 100).toFixed(d)}%</span>` : `<span class="down">▼ ${(-x * 100).toFixed(d)}%</span>`;
 }
 const fmtYm = (ym) => (ym ? `${ym.slice(2, 4)}.${ym.slice(4)}` : '–');
+const fmtDate = (d) => (d ? `${d.slice(2, 4)}.${d.slice(5, 7)}.${d.slice(8, 10)}` : '–'); // 2026-10-05 → 26.10.05
 const tsLabel = (v) => { const d = new Date(v); return `${String(d.getUTCFullYear()).slice(2)}.${String(d.getUTCMonth() + 1).padStart(2, '0')}`; };
 const median = (xs) => { if (!xs.length) return null; const s = [...xs].sort((a, b) => a - b), m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
 // ⓘ 설명 말풍선: 데스크톱은 마우스를 올리면, 모바일은 누르면 (아래쪽 시트로) 보인다. 긴 설명 문단 대신 쓴다
@@ -838,12 +842,30 @@ const OV_COLS = [
   ['volVsAvg', '거래량 (장기평균 대비)', (r) => r.ind?.volVsAvg, (r) => (r.ind ? `${r.ind.volRecent}건/월 ${delta(r.ind.volVsAvg, 0)}` : '–')],
   ['newHighShare', '신고가 비율', (r) => r.ind?.newHighShare, (r) => fmtPct(r.ind?.newHighShare, 0)],
   ['jeonseRatio', '전세가율', (r) => r.ind?.jeonseRatio, (r) => fmtPct(r.ind?.jeonseRatio, 0)],
+  ['weekly4w', '주간지수 4주 (부동산원)', (r) => rebInd(r.code)?.weekly?.chg4w, (r) => { const w = rebInd(r.code)?.weekly; return w ? `<span title="${fmtDate(w.date)} 주 기준 · 1주 ${fmtPct(w.chg1w, 2)}">${delta(w.chg4w, 2)}</span>` : '<span class="muted">–</span>'; }],
+  ['outside', '외지인 매입 (3개월)', (r) => rebInd(r.code)?.buyers?.outsideShare, (r) => outsideCell(rebInd(r.code)?.buyers)],
   ['phase', '국면', (r) => r.ind?.phase?.id, (r) => (r.error ? `<span class="err" title="${esc(r.error)}">오류</span>` : r.ind ? phaseChip(r.ind.phase) : '<span class="muted">불러오는 중…</span>')],
   ['candidate', '상승 후보 (실험)', (r) => hasMissing(r.code) ? null : r.ind?.candidate?.score, candidateCell],
   ['forecast3', '3개월 예측 (실험)', null, (r) => forecastCell(r, 3)],
   ['forecast6', '6개월 예측 (실험)', null, (r) => forecastCell(r, 6)],
   ['spark', '24개월 추이', null, (r) => (r.series ? sparkline(r.series.slice(-24).map((s) => s.ma)) : '')],
 ];
+
+// 외지인(다른 시·구 거주자) 매입 비중과 장기 평균(36개월) 대비 차이(%p)
+function outsideCell(b) {
+  if (b?.outsideShare == null) return '<span class="muted">–</span>';
+  const d = b.outsideLong == null ? null : Math.round((b.outsideShare - b.outsideLong) * 1000) / 10;
+  const diff = d == null ? '' : `<br><small class="${d > 0 ? 'up' : d < 0 ? 'down' : 'muted'}">${d > 0 ? '+' : ''}${d.toFixed(1)}%p</small>`;
+  return `<span title="${fmtYm(b.ym)}까지 3개월 ${b.count3m.toLocaleString()}건 · 장기 평균 ${fmtPct(b.outsideLong, 0)}">${fmtPct(b.outsideShare, 0)}${diff}</span>`;
+}
+// 개요 상단: 부동산원 주간지수로 본 서울·경기 최근 흐름 (실거래보다 빠름)
+function rebLead(group) {
+  const w = state.reb?.groups?.[group]?.ind?.weekly;
+  if (!w) return '';
+  // delta(x, 2)가 0.00%로 표시하는 범위만 보합으로 본다
+  const word = (x) => (x == null ? '–' : Math.abs(x) * 100 < 0.005 ? '보합' : delta(x, 2));
+  return `한국부동산원 주간지수(${fmtDate(w.date)} 주)로는 ${esc(group)} 아파트 매매가가 최근 4주 ${word(w.chg4w)}, 지난주 ${word(w.chg1w)}예요. ${tip('한국부동산원이 매주 표본 아파트의 시세를 조사해 낸 지수예요. 실거래가 아니라 조사 가격이라 실거래 지표와 다를 수 있지만, 신고를 기다리지 않아 1~2개월 더 빨리 흐름을 보여줘요.')}`;
+}
 
 function sortRows(rows, cols, [key, dir]) {
   const col = cols.find((c) => c[0] === key);
@@ -892,6 +914,7 @@ async function viewOverview(group, id) {
       <button id="resetRegions">필터 초기화</button></div>
     <p class="muted">♥ 좋아요는 이 브라우저에 저장됩니다. 단지는 ★ 관심단지로 저장할 수 있어요.</p>
     <p class="lead" id="ovLead"></p>
+    <p class="muted" id="rebLead"></p>
     <p class="muted" id="forecastNote"></p>
     <details class="card candidate-note"><summary>상승 후보 점수 (실험) — 계산 기준</summary><p>가격 흐름 50점 · 거래량 30점 · 전세가율 20점으로 현재 관측 지표를 비교합니다. 점수가 높을수록 최근 상승·거래 신호가 강합니다. 5년 후 급등 확률이나 예상 수익률은 아니며, 장기 예측 성능은 아직 검증되지 않았습니다.</p><p>완성월 36개월 이상, 거래가 있는 달 30개월 이상, 최근 월평균 거래 10건 이상일 때 표시합니다. 수집 누락이 있는 지역은 점수를 표시하지 않습니다. 공급·교통·정비사업은 아직 반영하지 않았습니다.</p></details>
     <div class="card">
@@ -913,6 +936,7 @@ async function viewOverview(group, id) {
   const render = () => {
     const rows = visibleRows();
     document.getElementById('forecastNote').textContent = forecastNote();
+    document.getElementById('rebLead').innerHTML = rebLead(group);
     thead.innerHTML = tableHead(OV_COLS, 'overview', state.sort.overview);
     document.getElementById('ovSort').innerHTML = sortSelect(OV_COLS, 'overview', state.sort.overview);
     tbody.innerHTML = sortRows(rows, OV_COLS, state.sort.overview)
@@ -959,6 +983,7 @@ async function viewOverview(group, id) {
   document.getElementById('resetRegions').addEventListener('click', () => { document.getElementById('regionQuery').value = ''; document.getElementById('likedRegions').checked = false; app.querySelectorAll('input[name="regionCode"]').forEach((x) => { x.checked = false; }); render(); refreshMap(); });
   render(); refreshMap();
   getForecasts().then(() => { if (!isStale(id)) render(); });
+  getReb().then(() => { if (!isStale(id)) render(); });
 
   let i = 0;
   const todo = rows.filter((r) => !r.ind && !r.error);
@@ -1279,6 +1304,7 @@ async function viewRegion(code, id) {
         <div class="chart-box short"><canvas id="jr"></canvas></div>
       </div>
     </div>
+    <div id="rebCards"></div>
     <div class="card">
       <div class="row" style="margin-bottom:8px"><h2 style="margin:0">단지별 시세</h2><span class="spacer"></span><span id="aptSort"></span><input type="search" id="q" placeholder="단지명·동 검색"></div>
       <div class="table-wrap mcards"><table><thead></thead><tbody></tbody></table></div>
@@ -1309,6 +1335,14 @@ async function viewRegion(code, id) {
     options: lineOpts,
   });
 
+  // 부동산원 지표는 선택 사항이라 실거래 화면을 먼저 그리고, 받아지면 카드만 덧붙인다
+  getReb().then(() => {
+    const box = document.getElementById('rebCards');
+    if (isStale(id) || !box) return;
+    box.innerHTML = rebCards(code, region);
+    rebCharts(code, region, lineDs, lineOpts);
+  });
+
   const thead = app.querySelector('thead'), tbody = app.querySelector('tbody'), q = document.getElementById('q');
   let watched = new Set();
   const cols = [...APT_COLS, ['star', '', null, (r) => `<button class="star ${watched.has(r.key) ? 'on' : ''}" data-key="${esc(r.key)}" title="관심단지에 좋아요 (이 브라우저에 저장)">★</button>`]];
@@ -1334,6 +1368,54 @@ async function viewRegion(code, id) {
     if (tr) location.hash = tr.dataset.href;
   });
   render();
+}
+
+// ---------- 지역 상세: 한국부동산원 주간지수·매입자 거주지 ----------
+function rebCards(code, region) {
+  const r = state.reb?.regions?.[code];
+  if (!r) return '';
+  const w = r.ind?.weekly, b = r.ind?.buyers;
+  const gg = region.group === '경기';
+  return `<div class="grid2">
+      ${r.weekly?.dates.length ? `<div class="card">
+        <h2>주간 아파트 가격지수 (한국부동산원) ${tip('한국부동산원이 매주 표본 아파트 시세를 조사한 지수예요 (2026.07.06 = 100). 실거래가 아니라 조사 가격이라 위 실거래 평당가와 다를 수 있지만, 신고를 기다리지 않아 최근 흐름을 더 빨리 보여줘요.')}</h2>
+        <p class="muted" style="margin:-6px 0 8px;font-size:13px">${fmtDate(w?.date)} 주 · 매매 1주 ${delta(w?.chg1w, 2)} · 4주 ${delta(w?.chg4w, 2)} · 12주 ${delta(w?.chg12w, 2)} · 전세 4주 ${delta(w?.jeonseChg4w, 2)}</p>
+        ${legend([['매매', css('--series-1')], ['전세', css('--series-2')]])}
+        <div class="chart-box short"><canvas id="rebWeekly"></canvas></div>
+      </div>` : '<div></div>'}
+      ${r.buyers?.yms.length ? `<div class="card">
+        <h2>외지인 매입 비중 ${tip(`이 지역 아파트를 산 사람 중 다른 시·구에 사는 사람의 비중이에요 (한국부동산원 매입자 거주지별 거래, 3개월 이동 합계). 장기 평균보다 높아지면 외부 수요(투자·갈아타기)가 몰리고 있다는 뜻이에요.${gg ? ' 서울 거주자 비중도 함께 보여줘요.' : ''}`)}</h2>
+        <p class="muted" style="margin:-6px 0 8px;font-size:13px">${fmtYm(b?.ym)}까지 3개월 ${fmtPct(b?.outsideShare, 0)}${b?.outsideLong != null ? ` · 장기 평균 ${fmtPct(b.outsideLong, 0)}` : ''}${gg && b?.seoulShare != null ? ` · 서울 거주자 ${fmtPct(b.seoulShare, 0)}` : ''}</p>
+        ${legend([['외지인', css('--series-4')], ...(gg ? [['서울 거주자', css('--series-1')]] : [])])}
+        <div class="chart-box short"><canvas id="rebBuyers"></canvas></div>
+      </div>` : '<div></div>'}
+    </div>`;
+}
+function rebCharts(code, region, lineDs, lineOpts) {
+  const r = state.reb?.regions?.[code];
+  const wEl = document.getElementById('rebWeekly'), bEl = document.getElementById('rebBuyers');
+  if (wEl) {
+    makeChart(wEl, {
+      type: 'line',
+      data: { labels: r.weekly.dates.map(fmtDate), datasets: [lineDs('매매', r.weekly.sale, css('--series-1')), lineDs('전세', r.weekly.jeonse, css('--series-2'))] },
+      options: { ...lineOpts, scales: { ...lineOpts.scales, y: { ticks: { callback: (v) => Number(v).toFixed(0) } } },
+        plugins: { tooltip: { callbacks: { label: (c) => ` ${c.dataset.label} ${c.raw == null ? '–' : c.raw.toFixed(2)}` } } } },
+    });
+  }
+  if (bEl) {
+    const b = r.buyers;
+    // 3개월 이동 합계 비중 (월별 건수가 적은 지역의 출렁임을 줄인다)
+    const roll = (key) => b.yms.map((_, i) => {
+      if (i < 2) return null;
+      const t = b.total.slice(i - 2, i + 1).reduce((a, x) => a + (x || 0), 0);
+      const v = key === 'outside' ? t - b.local.slice(i - 2, i + 1).reduce((a, x) => a + (x || 0), 0) : b[key].slice(i - 2, i + 1).reduce((a, x) => a + (x || 0), 0);
+      return t ? v / t : null;
+    });
+    const n = Math.min(b.yms.length, 36);
+    const ds = [lineDs('외지인', roll('outside').slice(-n), css('--series-4'))];
+    if (region.group === '경기') ds.push(lineDs('서울 거주자', roll('seoul').slice(-n), css('--series-1')));
+    makeChart(bEl, { type: 'line', data: { labels: b.yms.slice(-n).map(fmtYm), datasets: ds }, options: lineOpts });
+  }
 }
 
 // ---------- 단지 상세 ----------
