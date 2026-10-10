@@ -18,6 +18,7 @@ const getMeta = () => api(STATIC ? 'data/meta.json' : '/api/meta');
 const getOverview = (code) => api(STATIC ? `data/overview/${code}.json` : `/api/overview/${code}`);
 // 금리·주택가격 전망 심리 (한국은행). 키가 없어 파일이 없으면 null → 카드를 그리지 않는다
 const getMacro = () => (state.macro ||= api(STATIC ? 'data/macro.json' : '/api/macro').catch(() => null));
+const getForecasts = () => (state.forecastPromise ||= api(STATIC ? 'data/forecasts.json' : '/api/forecasts').then((d) => (state.forecasts = d)).catch(() => (state.forecasts = { status: 'unavailable', regions: {}, validation: {} })));
 
 const dateStr = (n) => { const s = String(n); return `${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}`; };
 function unpack(p, months, code) {
@@ -682,6 +683,43 @@ const candidateCell = (r) => {
   const c = hasMissing(r.code) ? null : r.ind?.candidate;
   return c ? `<span title="${esc(c.factors.map((f) => `${f.name} ${f.points}점`).join(' · '))}">${c.score}점</span>` : '<span class="muted">–</span>';
 };
+function forecastFor(code, horizon) {
+  const data = state.forecasts;
+  if (!data || data.source !== 'live' || (state.meta.source || state.meta.mode) !== 'live' || hasMissing(code)) return null;
+  if (state.meta.yms && state.meta.yms[state.meta.yms.length - 2] !== data.asOf) return null;
+  return data.regions?.[code]?.[horizon] || null;
+}
+function forecastCell(r, horizon) {
+  const f = forecastFor(r.code, horizon);
+  if (f?.status !== 'available') return '<span class="muted" title="검증 기준 미달·표본 부족·수집 누락 시 예측을 보류합니다">보류</span>';
+  return `<span title="${fmtYm(f.asOf)} → ${fmtYm(f.targetYm)} · 오차 참고 범위 ${fmtPct(f.lower)} ~ ${fmtPct(f.upper)}">${delta(f.change)}<br><small class="muted">${fmtPct(f.lower)} ~ ${fmtPct(f.upper)}</small></span>`;
+}
+function forecastNote() {
+  const data = state.forecasts;
+  if (!data) return '단기 예측 데이터를 확인하는 중입니다.';
+  if (data.status === 'unavailable') return '단기 예측 데이터를 불러오지 못했습니다.';
+  if (data.source !== 'live' || (state.meta.source || state.meta.mode) !== 'live') return '실거래 데이터와 검증 결과가 있을 때 단기 예측을 표시합니다. 데모에서는 표시하지 않습니다.';
+  if (state.meta.yms && state.meta.yms[state.meta.yms.length - 2] !== data.asOf) return '예측 기준월이 현재 데이터와 달라 수치를 표시하지 않습니다.';
+  const available = Object.values(data.validation || {}).filter((v) => v.status === 'passed');
+  return available.length ? `${fmtYm(data.asOf)} 기준월 이후 3·6개월의 구성 보정 평당가(3개월 이동평균) 변화를 검증하며, 통과한 기간·지역의 예측만 표시합니다. 범위는 과거 오차를 참고한 값이며 향후 포함 확률을 보장하지 않습니다.` : '현재 검증 기준을 통과한 단기 예측이 없어 수치를 보류합니다.';
+}
+function forecastReason(code, horizon) {
+  const f = forecastFor(code, horizon);
+  if (hasMissing(code)) return '수집 누락이 있어 예측을 보류합니다.';
+  if (f?.reason === 'regional_validation_failed') return '이 지역에서는 가격 유지 기준보다 오차가 작지 않아 보류합니다.';
+  if (f?.reason === 'validation_failed') return state.forecasts.validation[horizon]?.intervalCoverage < 0.7
+    ? '오차 범위 검증을 통과하지 못해 예측을 보류합니다.' : '가격 유지 기준과 비교한 검증을 통과하지 못해 보류합니다.';
+  return '실거래 이력과 검증 결과가 충분할 때 표시합니다.';
+}
+function forecastCard(code, brokerOnly) {
+  const horizons = [3, 6];
+  return `<section class="card" id="shortForecast"><h2>단기 가격 예측 (실험)</h2><p class="muted">${esc(forecastNote())}</p>${brokerOnly
+    ? '<p class="muted">단기 예측은 전체 거래 기준에서만 표시됩니다.</p>'
+    : `<div class="kpis">${horizons.map((h) => {
+      const f = forecastFor(code, h);
+      return f?.status === 'available' ? `<div class="kpi"><div class="label">${h}개월 뒤 · ${fmtYm(f.targetYm)}</div><div class="value num">${delta(f.change)}</div><div class="hint">오차 참고 범위 ${fmtPct(f.lower)} ~ ${fmtPct(f.upper)}</div><div class="hint">과거 검증 평균 오차 ${(f.regionalMae * 100).toFixed(1)}%p · ${f.intervalSamples}개 지역·시점 표본의 범위 참고</div></div>` : `<div class="kpi"><div class="label">${h}개월 뒤</div><div class="value muted">예측 보류</div><div class="hint">${esc(forecastReason(code, h))}</div></div>`;
+    }).join('')}</div>`}<details><summary>검증 기준과 한계</summary><p>과거 결과가 확인된 표본만 학습에 사용하고, 모델 선택 기간과 최종 검증 기간을 분리합니다. 최종 6개 기준월·200개 지역·시점 이상에서 가격 유지 기준보다 평균 오차가 5% 이상 작고, 오차 범위의 실제 포함률이 70% 이상일 때 표시합니다. 각 지역도 가격 유지 기준보다 오차가 작아야 합니다.</p><p>과거 신고일·정정·취소 이력이 없어 당시 공개된 정보만의 검증은 아닙니다. 인접 월과 지역은 독립 표본이 아니며, 공급·금리·교통·정비사업과 향후 정책 변화는 반영하지 않았습니다. 단지별 매매가나 급등 확률을 뜻하지 않습니다.</p></details></section>`;
+}
 const regionLikes = {
   list() { try { const v = JSON.parse(localStorage.getItem('homeTrend.regionLikes')); return Array.isArray(v) ? v.filter((x) => typeof x === 'string') : []; } catch (_) { return []; } },
   has(code) { return this.list().includes(code); },
@@ -704,6 +742,8 @@ const OV_COLS = [
   ['jeonseRatio', '전세가율', (r) => r.ind?.jeonseRatio, (r) => fmtPct(r.ind?.jeonseRatio, 0)],
   ['phase', '국면', (r) => r.ind?.phase?.id, (r) => (r.error ? `<span class="err" title="${esc(r.error)}">오류</span>` : r.ind ? phaseChip(r.ind.phase) : '<span class="muted">불러오는 중…</span>')],
   ['candidate', '상승 후보 (실험)', (r) => hasMissing(r.code) ? null : r.ind?.candidate?.score, candidateCell],
+  ['forecast3', '3개월 예측 (실험)', (r) => forecastFor(r.code, 3)?.status === 'available' ? forecastFor(r.code, 3).change : null, (r) => forecastCell(r, 3)],
+  ['forecast6', '6개월 예측 (실험)', (r) => forecastFor(r.code, 6)?.status === 'available' ? forecastFor(r.code, 6).change : null, (r) => forecastCell(r, 6)],
   ['spark', '24개월 추이', null, (r) => (r.series ? sparkline(r.series.slice(-24).map((s) => s.ma)) : '')],
 ];
 
@@ -754,6 +794,7 @@ async function viewOverview(group, id) {
       <button id="resetRegions">필터 초기화</button></div>
     <p class="muted">♥ 좋아요는 이 브라우저에 저장됩니다. 단지는 ★ 관심단지로 저장할 수 있어요.</p>
     <p class="lead" id="ovLead"></p>
+    <p class="muted" id="forecastNote"></p>
     <details class="card candidate-note"><summary>상승 후보 점수 (실험) — 계산 기준</summary><p>가격 흐름 50점 · 거래량 30점 · 전세가율 20점으로 현재 관측 지표를 비교합니다. 점수가 높을수록 최근 상승·거래 신호가 강합니다. 5년 후 급등 확률이나 예상 수익률은 아니며, 장기 예측 성능은 아직 검증되지 않았습니다.</p><p>완성월 36개월 이상, 거래가 있는 달 30개월 이상, 최근 월평균 거래 10건 이상일 때 표시합니다. 수집 누락이 있는 지역은 점수를 표시하지 않습니다. 공급·교통·정비사업은 아직 반영하지 않았습니다.</p></details>
     <div class="card">
       <div class="row" style="margin-bottom:8px"><h2 style="margin:0">국면 지도 — 가격 변화 × 거래량 ${tip('벌집순환모형: 거래량이 먼저 움직이고 가격이 따라와요. 오른쪽 아래(불황) → 가운데 오른쪽(회복진입) → 오른쪽 위(회복) 순서로 옮겨가는 지역을 주목하세요. 점에 마우스를 올리면 6개월 전 → 3개월 전 → 지금 이동 경로가 보이고, 누르면 지역 화면으로 가요.')}</h2><span class="spacer"></span><label class="muted" style="font-size:12px"><input type="checkbox" id="trail" ${state.trail ? 'checked' : ''}> 모든 지역 이동 경로</label></div>
@@ -773,6 +814,7 @@ async function viewOverview(group, id) {
   };
   const render = () => {
     const rows = visibleRows();
+    document.getElementById('forecastNote').textContent = forecastNote();
     thead.innerHTML = tableHead(OV_COLS, 'overview', state.sort.overview);
     document.getElementById('ovSort').innerHTML = sortSelect(OV_COLS, 'overview', state.sort.overview);
     tbody.innerHTML = sortRows(rows, OV_COLS, state.sort.overview)
@@ -818,6 +860,7 @@ async function viewOverview(group, id) {
   for (const el of app.querySelectorAll('#regionQuery, #likedRegions, input[name="regionCode"]')) el.addEventListener(el.id === 'regionQuery' ? 'input' : 'change', () => { render(); refreshMap(); });
   document.getElementById('resetRegions').addEventListener('click', () => { document.getElementById('regionQuery').value = ''; document.getElementById('likedRegions').checked = false; app.querySelectorAll('input[name="regionCode"]').forEach((x) => { x.checked = false; }); render(); refreshMap(); });
   render(); refreshMap();
+  getForecasts().then(() => { if (!isStale(id)) render(); });
 
   let i = 0;
   const todo = rows.filter((r) => !r.ind && !r.error);
@@ -1054,7 +1097,7 @@ async function viewRegion(code, id) {
   const months = getMonths(`region.${code}`, opts, Math.min(60, state.meta.months || 60));
   const brokerOnly = getKind() === 'broker';
   showLoading(`<div class="crumb"><a href="#/g/${esc(region.group)}">${esc(region.group)}</a> ›</div><h1>${esc(region.name)}</h1>${skeleton(`실거래 ${months}개월치 불러오는 중… (처음 보는 기간은 국토부 API 호출로 30초 정도 걸릴 수 있어요)`)}`);
-  const d = await getRegion(code, months, brokerOnly);
+  const [d] = await Promise.all([getRegion(code, months, brokerOnly), getForecasts()]);
   if (isStale(id)) return;
   destroyCharts();
   const ind = d.indicators;
@@ -1072,6 +1115,7 @@ async function viewRegion(code, id) {
       <div class="kpi"><div class="label">전세가율 (최근 6개월)</div><div class="value num">${fmtPct(ind.jeonseRatio, 0)}</div><div class="hint">평당 전세가 ÷ 평당 매매가</div></div>
       <div class="kpi"><div class="label">신고가 비율 (최근 3개월)</div><div class="value num">${fmtPct(ind.newHighShare, 0)}</div><div class="hint">직전 거래보다 ${ind.upShare != null ? `오름 ${fmtPct(ind.upShare, 0)} · 내림 ${fmtPct(ind.downShare, 0)}` : '–'}</div></div>
     </div>
+    ${forecastCard(code, brokerOnly)}
     ${ind.phase ? `<p class="phase-note card">${ind.phase.id ? `${ind.phase.id}국면 ` : ''}<b>${esc(ind.phase.name)}</b> — ${esc(ind.phase.note)}</p>` : ''}
     <div class="card">
       <div class="tv-head">

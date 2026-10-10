@@ -151,7 +151,7 @@ tr.muted td { color: var(--muted); }
 
 .links a { margin-right: 12px; font-size: 13px; color: var(--series-1); }
 .err { color: var(--up); }
-.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.grid2 { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
 .watch-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
 .watch-grid .card { margin: 0; cursor: pointer; }
 .watch-grid .card:hover { border-color: var(--series-1); }
@@ -160,7 +160,7 @@ tr.muted td { color: var(--muted); }
   .top { padding: 10px 16px; gap: 8px 12px; flex-wrap: wrap; }
   .theme { margin-left: auto; }
   main { padding: 16px; }
-  .grid2 { grid-template-columns: 1fr; }
+  .grid2 { grid-template-columns: minmax(0, 1fr); }
   .badge { display: none; }
   input[type="search"] { min-width: 0; width: 100%; }
 }
