@@ -523,7 +523,7 @@ function aptChart(sel, allTrades, allJeonse) {
     const x = pinned.dot ? tView.dotX(x0, pinned.dot) : x0;
     pop.hidden = false;
     const w = pop.offsetWidth, h = pop.offsetHeight, gap = 14;
-    const left = x + gap + w < W - 60 ? x + gap : Math.max(0, x - gap - w);
+    const left = Math.max(0, Math.min(W - w, x + gap + w < W - 60 ? x + gap : x - gap - w));
     pop.style.left = `${left}px`;
     pop.style.top = `${Math.max(4, Math.min(H - h - 4, yc - h / 2))}px`;
   };
@@ -533,6 +533,19 @@ function aptChart(sel, allTrades, allJeonse) {
     if (!target) { pop.hidden = true; return; }
     pop.innerHTML = target.dot ? dotCard(target.dot) : monthCard(target.i);
     place();
+    follow();
+  };
+  // 카드가 열려 있는 동안 매 프레임 자리를 맞춘다. 기간 이동뿐 아니라 창 크기 변경(구간이 고정돼 range 이벤트가 없다)·
+  // 가격 축 드래그처럼 좌표만 바뀌는 조작에도 따라가게. 카드를 닫거나 화면을 떠나면 멈춘다
+  let raf = 0;
+  const follow = () => {
+    if (raf) return;
+    const tick = () => {
+      if (!pinned || !pop.isConnected) { raf = 0; return; }
+      place();
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
   };
   const setAnchor = (dot) => {
     anchor = dot;
@@ -547,7 +560,6 @@ function aptChart(sel, allTrades, allJeonse) {
       openCard(pinned); showHead(null);
     }
   });
-  chart.timeScale().subscribeVisibleLogicalRangeChange(() => requestAnimationFrame(place)); // 가격 축이 다시 맞춰진 뒤에
   chart.subscribeClick((p) => {
     if (o.mode === 'dots') {
       const dot = nearest(p);
