@@ -17,6 +17,7 @@ const clampMonths = (v, def) => Math.min(240, Math.max(13, Number(v) || def));
 const regionOf = (code) => regions.find((r) => r.code === code);
 let macroCache = null;
 let rebCache = null;
+let rebLoading = null;
 let searchCache = null;
 
 const routes = [
@@ -55,7 +56,9 @@ const routes = [
   // 주간 가격지수·매입자 거주지 (한국부동산원). 주간·월별 지표라 12시간 동안 메모리에 둔다
   [/^\/api\/reb$/, async () => {
     if (rebCache && Date.now() - rebCache.at < 12 * 60 * 60 * 1000) return rebCache.data;
-    const data = await getReb(60);
+    // 전 지역을 받는 데 시간이 걸리므로 동시에 들어온 요청은 같은 수집을 기다린다
+    rebLoading ||= getReb(60).finally(() => { rebLoading = null; });
+    const data = await rebLoading;
     if (!data) throw notFound('REB_API_KEY가 없어 부동산원 지표를 볼 수 없습니다');
     rebCache = { at: Date.now(), data };
     return data;

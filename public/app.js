@@ -862,7 +862,8 @@ function outsideCell(b) {
 function rebLead(group) {
   const w = state.reb?.groups?.[group]?.ind?.weekly;
   if (!w) return '';
-  const word = (x) => (x == null ? '–' : Math.abs(x) < 0.0005 ? '보합' : `${delta(x, 2)}`);
+  // delta(x, 2)가 0.00%로 표시하는 범위만 보합으로 본다
+  const word = (x) => (x == null ? '–' : Math.abs(x) * 100 < 0.005 ? '보합' : delta(x, 2));
   return `한국부동산원 주간지수(${fmtDate(w.date)} 주)로는 ${esc(group)} 아파트 매매가가 최근 4주 ${word(w.chg4w)}, 지난주 ${word(w.chg1w)}예요. ${tip('한국부동산원이 매주 표본 아파트의 시세를 조사해 낸 지수예요. 실거래가 아니라 조사 가격이라 실거래 지표와 다를 수 있지만, 신고를 기다리지 않아 1~2개월 더 빨리 흐름을 보여줘요.')}`;
 }
 
@@ -1253,7 +1254,7 @@ async function viewRegion(code, id) {
   const months = getMonths(`region.${code}`, opts, Math.min(60, state.meta.months || 60));
   const brokerOnly = getKind() === 'broker';
   showLoading(`<div class="crumb"><a href="#/g/${esc(region.group)}">${esc(region.group)}</a> ›</div><h1>${esc(region.name)}</h1>${skeleton(`실거래 ${months}개월치 불러오는 중… (처음 보는 기간은 국토부 API 호출로 30초 정도 걸릴 수 있어요)`)}`);
-  const [d] = await Promise.all([getRegion(code, months, brokerOnly), getForecasts(), getReb()]);
+  const [d] = await Promise.all([getRegion(code, months, brokerOnly), getForecasts()]);
   if (isStale(id)) return;
   destroyCharts();
   const ind = d.indicators;
@@ -1303,7 +1304,7 @@ async function viewRegion(code, id) {
         <div class="chart-box short"><canvas id="jr"></canvas></div>
       </div>
     </div>
-    ${rebCards(code, region)}
+    <div id="rebCards"></div>
     <div class="card">
       <div class="row" style="margin-bottom:8px"><h2 style="margin:0">단지별 시세</h2><span class="spacer"></span><span id="aptSort"></span><input type="search" id="q" placeholder="단지명·동 검색"></div>
       <div class="table-wrap mcards"><table><thead></thead><tbody></tbody></table></div>
@@ -1334,7 +1335,13 @@ async function viewRegion(code, id) {
     options: lineOpts,
   });
 
-  rebCharts(code, region, lineDs, lineOpts);
+  // 부동산원 지표는 선택 사항이라 실거래 화면을 먼저 그리고, 받아지면 카드만 덧붙인다
+  getReb().then(() => {
+    const box = document.getElementById('rebCards');
+    if (isStale(id) || !box) return;
+    box.innerHTML = rebCards(code, region);
+    rebCharts(code, region, lineDs, lineOpts);
+  });
 
   const thead = app.querySelector('thead'), tbody = app.querySelector('tbody'), q = document.getElementById('q');
   let watched = new Set();
