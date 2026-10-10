@@ -20,7 +20,7 @@ const getOverview = (code) => api(STATIC ? `data/overview/${code}.json` : `/api/
 const getMacro = () => (state.macro ||= api(STATIC ? 'data/macro.json' : '/api/macro').catch(() => null));
 
 const dateStr = (n) => { const s = String(n); return `${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}`; };
-function unpack(p, months) {
+function unpack(p, months, code) {
   const yms = p.yms.slice(-months);
   const from = Number(yms[0] + '01');
   const apts = p.apts;
@@ -29,18 +29,18 @@ function unpack(p, months) {
     date: dateStr(d), area: a / 100, floor, price, kind: direct ? '직거래' : '중개거래',
   }));
   const rents = p.j.filter((r) => r[1] >= from).map(([i, d, a, floor, deposit]) => ({
-    dong: apts[i][0], apt: apts[i][1], built: apts[i][2],
+    dong: apts[i][0], apt: apts[i][1], built: apts[i][2], jibun: apts[i][3],
     date: dateStr(d), area: a / 100, floor, deposit, monthly: 0,
   }));
-  return { yms, trades, rents };
+  return { yms, trades: A.normalizeRows(code, trades), rents: A.normalizeRows(code, rents) };
 }
 // 지역 원본은 한 번 받아 메모리에 두고, 지역·단지 화면 모두 여기서 계산
 async function getRaw(code, months) {
   const k = `${code}:${months}`;
   if (!state.raw[k]) {
     state.raw[k] = (STATIC
-      ? (state.raw[code] ||= api(`data/region/${code}.json`)).then((p) => unpack(p, months))
-      : api(`/api/raw/${code}?months=${months}`).then((p) => unpack(p, months))
+      ? (state.raw[code] ||= api(`data/region/${code}.json`)).then((p) => unpack(p, months, code))
+      : api(`/api/raw/${code}?months=${months}`).then((p) => unpack(p, months, code))
     ).catch((e) => { delete state.raw[k]; delete state.raw[code]; throw e; });
   }
   return state.raw[k];
@@ -49,9 +49,12 @@ async function getRaw(code, months) {
 async function getRegion(code, months, brokerOnly) {
   const raw = await getRaw(code, months);
   const trades = brokerOnly ? raw.trades.filter((t) => t.kind !== '직거래') : raw.trades;
-  return { ...A.regionSummary(raw.yms, trades, raw.rents), apartments: A.apartmentList(trades) };
+  const summary = A.regionSummary(raw.yms, trades, raw.rents);
+  summary.indicators.candidate = hasMissing(code) ? null : A.candidateScore(summary.indicators, summary.series);
+  return { ...summary, apartments: A.apartmentList(trades) };
 }
 async function getApt(code, key, months) {
+  key = A.canonicalKey(code, key);
   const { yms, trades, rents } = await getRaw(code, months);
   const t = A.markBulk(trades.filter((x) => A.aptKey(x) === key)).sort((a, b) => a.date.localeCompare(b.date));
   if (!t.length) throw new Error('해당 기간에 거래가 없는 단지입니다');
@@ -120,16 +123,31 @@ const phaseChip = (p) => (p ? `<span class="phase" title="${esc(p.note)}"><b>${p
 
 // 관심단지 (브라우저 저장). seen: 마지막으로 확인한 거래일 → 그 뒤 거래를 '새 거래'로 표시
 const watch = {
-  list() { try { return JSON.parse(localStorage.getItem('homeTrend.watch')) || []; } catch (_) { return []; } },
+  list() {
+    try {
+      const raw = JSON.parse(localStorage.getItem('homeTrend.watch'));
+      if (!Array.isArray(raw)) return [];
+      const merged = new Map();
+      for (const w of raw) {
+        if (!w || typeof w.code !== 'string' || typeof w.key !== 'string') continue;
+        const key = A.canonicalKey(w.code, w.key);
+        const old = merged.get(`${w.code}:${key}`);
+        merged.set(`${w.code}:${key}`, { ...w, key, name: key.split('|').slice(1).join('|'), seen: [old?.seen, w.seen].filter(Boolean).sort().pop() });
+      }
+      return [...merged.values()];
+    } catch (_) { return []; }
+  },
   save(l) { try { localStorage.setItem('homeTrend.watch', JSON.stringify(l)); } catch (_) { /* 저장 불가 */ } },
-  has(code, key) { return this.list().some((w) => w.code === code && w.key === key); },
+  has(code, key) { key = A.canonicalKey(code, key); return this.list().some((w) => w.code === code && w.key === key); },
   toggle(item) {
+    item = { ...item, key: A.canonicalKey(item.code, item.key) };
     let l = this.list();
     l = this.has(item.code, item.key) ? l.filter((w) => !(w.code === item.code && w.key === item.key)) : [...l, item];
     this.save(l);
     return this.has(item.code, item.key);
   },
   markSeen(code, key, date) {
+    key = A.canonicalKey(code, key);
     const l = this.list();
     const w = l.find((x) => x.code === code && x.key === key);
     if (w && date && !(w.seen >= date)) { w.seen = date; this.save(l); }
@@ -517,6 +535,7 @@ async function route() {
         b.textContent += ` · ${t.getMonth() + 1}/${t.getDate()} 갱신`;
       }
       b.className = 'badge' + (live ? '' : ' demo');
+      initRegionJump();
     }
     const parts = location.hash.replace(/^#\/?/, '').split('/').map(decodeURIComponent);
     const view = parts[0];
@@ -570,7 +589,7 @@ applyTheme();
 const getSearch = () => (state.search ||= api(STATIC ? 'data/search.json' : '/api/search').catch((e) => { state.search = null; throw e; }));
 const norm = (s) => String(s).toLowerCase().replace(/\s+/g, '');
 function searchFlat(idx) {
-  return state.meta.regions.flatMap((r) => (idx.regions[r.code] || []).map(([dong, apt, cnt]) => ({ r, dong, apt, cnt, na: norm(apt), nd: norm(dong) })));
+  return state.meta.regions.flatMap((r) => (idx.regions[r.code] || []).map(([dong, apt, cnt]) => ({ r, dong, apt, cnt, na: norm(A.apartmentNames(r.code, dong, apt).join(' ')), nd: norm(dong), nr: norm(r.name) })));
 }
 // 지역 → 단지명이 검색어로 시작 → 단지명에 포함 → 동 이름에 포함 순, 같으면 거래 많은 순
 function searchMatch(flat, q) {
@@ -580,7 +599,7 @@ function searchMatch(flat, q) {
   const apts = [];
   for (const e of flat) {
     const at = e.na.indexOf(n);
-    if (at < 0 && !e.nd.includes(n)) continue;
+    if (at < 0 && !e.nd.includes(n) && !e.nr.includes(n)) continue;
     apts.push({ ...e, score: at === 0 ? 0 : at > 0 ? 1 : 2 });
   }
   apts.sort((x, y) => x.score - y.score || y.cnt - x.cnt);
@@ -600,14 +619,14 @@ function highlight(text, q) {
     const q = input.value;
     list.hidden = !q.trim();
     if (list.hidden) return;
-    if (!flat) { list.innerHTML = `<div class="gs-msg">${failed ? '검색 목록을 불러오지 못했어요' : '검색 목록 불러오는 중…'}</div>`; return; }
-    items = searchMatch(flat, q);
+    items = searchMatch(flat || [], q);
     sel = Math.min(sel, Math.max(0, items.length - 1));
     list.innerHTML = (items.length
       ? items.map((it, i) => `<a class="gs-item${i === sel ? ' on' : ''}" href="${href(it)}" data-i="${i}">${it.apt
         ? `<b>${highlight(it.apt, q)}</b><span class="muted">${esc(it.r.name)} ${highlight(it.dong, q)} · 거래 ${it.cnt}건</span>`
         : `<b>${highlight(it.r.name, q)}</b><span class="muted">지역 · ${esc(it.r.group)}</span>`}</a>`).join('')
       : '<div class="gs-msg">찾는 단지가 없어요</div>')
+      + (!flat ? `<div class="gs-msg muted">${failed ? '단지 목록을 불러오지 못했어요. 지역은 바로 선택할 수 있어요.' : '단지 목록 불러오는 중…'}</div>` : '')
       + (partial ? '<div class="gs-msg muted">로컬 서버에선 받아 둔 지역의 단지만 검색돼요</div>' : '');
     list.querySelector('.on')?.scrollIntoView({ block: 'nearest' });
   };
@@ -636,8 +655,23 @@ function highlight(text, q) {
 }());
 
 // ---------- 개요: 지역별 비교 ----------
+const hasMissing = (code) => (state.meta?.missing || []).some((m) => m.startsWith(`${code}/`));
+const candidateCell = (r) => {
+  const c = hasMissing(r.code) ? null : r.ind?.candidate;
+  return c ? `<span title="${esc(c.factors.map((f) => `${f.name} ${f.points}점`).join(' · '))}">${c.score}점</span>` : '<span class="muted">–</span>';
+};
+const regionLikes = {
+  list() { try { const v = JSON.parse(localStorage.getItem('homeTrend.regionLikes')); return Array.isArray(v) ? v.filter((x) => typeof x === 'string') : []; } catch (_) { return []; } },
+  has(code) { return this.list().includes(code); },
+  toggle(code) { const list = this.list(); const next = list.includes(code) ? list.filter((x) => x !== code) : [...list, code]; try { localStorage.setItem('homeTrend.regionLikes', JSON.stringify(next)); } catch (_) {} },
+};
+function initRegionJump() {
+  const select = document.getElementById('regionJump');
+  select.innerHTML = '<option value="">지역 바로가기</option>' + ['서울', '경기'].map((group) => `<optgroup label="${group}">${state.meta.regions.filter((r) => r.group === group).sort((a, b) => a.name.localeCompare(b.name, 'ko')).map((r) => `<option value="${r.code}">${esc(r.name)}</option>`).join('')}</optgroup>`).join('');
+  select.onchange = () => { if (select.value) location.hash = `#/r/${select.value}`; select.value = ''; };
+}
 const OV_COLS = [
-  ['name', '지역', (r) => r.name, (r) => `<a href="#/r/${r.code}">${esc(r.name)}</a>`],
+  ['name', '지역', (r) => r.name, (r) => `<button class="star ${regionLikes.has(r.code) ? 'on' : ''}" data-like-region="${r.code}" aria-label="${esc(r.name)} 좋아요" aria-pressed="${regionLikes.has(r.code)}">♥</button> <a href="#/r/${r.code}">${esc(r.name)}</a>`],
   ['current', '평당가 (3개월 평균)', (r) => r.ind?.current, (r) => fmtMan(r.ind?.current)],
   ['eq84', '84㎡ 환산', (r) => r.ind?.current, (r) => (r.ind?.current ? fmtEok(Math.round(r.ind.current * 84 / PYEONG / 100) * 100) : '–')],
   ['chg3m', '3개월', (r) => r.ind?.chg3m, (r) => delta(r.ind?.chg3m)],
@@ -647,6 +681,7 @@ const OV_COLS = [
   ['newHighShare', '신고가 비율', (r) => r.ind?.newHighShare, (r) => fmtPct(r.ind?.newHighShare, 0)],
   ['jeonseRatio', '전세가율', (r) => r.ind?.jeonseRatio, (r) => fmtPct(r.ind?.jeonseRatio, 0)],
   ['phase', '국면', (r) => r.ind?.phase?.id, (r) => (r.error ? `<span class="err" title="${esc(r.error)}">오류</span>` : r.ind ? phaseChip(r.ind.phase) : '<span class="muted">불러오는 중…</span>')],
+  ['candidate', '상승 후보 (실험)', (r) => hasMissing(r.code) ? null : r.ind?.candidate?.score, candidateCell],
   ['spark', '24개월 추이', null, (r) => (r.series ? sparkline(r.series.slice(-24).map((s) => s.ma)) : '')],
 ];
 
@@ -691,7 +726,13 @@ async function viewOverview(group, id) {
   regions.forEach((r) => { if (state.overview[r.code]?.error) delete state.overview[r.code]; });
   app.innerHTML = `
     <h1>${esc(group)} 지역별 시세 트렌드 ${tip('실거래 평당가의 3개월 이동평균 기준 (단지 구성 보정, 신고 진행 중인 지난달·통매각 같은 일괄 거래 제외). 거래량은 최근 3개월을 36개월 평균과 비교해요. 신고가 비율은 최근 3개월 거래 중 같은 단지·평형의 이전 최고가를 넘은 거래 비중으로, 시장이 달아오르면 가장 먼저 올라가요.')}</h1>
+    <div class="card region-filter"><label>구·시 찾기 <input id="regionQuery" type="search" placeholder="예: 성북구"></label>
+      <label><input type="checkbox" id="likedRegions"> 좋아요한 지역만</label>
+      <details><summary>비교할 지역 선택</summary><div class="region-options">${regions.slice().sort((a, b) => a.name.localeCompare(b.name, 'ko')).map((r) => `<label><input type="checkbox" name="regionCode" value="${r.code}">${esc(r.name)}</label>`).join('')}</div></details>
+      <button id="resetRegions">필터 초기화</button></div>
+    <p class="muted">♥ 좋아요는 이 브라우저에 저장됩니다. 단지는 ★ 관심단지로 저장할 수 있어요.</p>
     <p class="lead" id="ovLead"></p>
+    <details class="card candidate-note"><summary>상승 후보 점수 (실험) — 계산 기준</summary><p>가격 흐름 50점 · 거래량 30점 · 전세가율 20점으로 현재 관측 지표를 비교합니다. 점수가 높을수록 최근 상승·거래 신호가 강합니다. 5년 후 급등 확률이나 예상 수익률은 아니며, 장기 예측 성능은 아직 검증되지 않았습니다.</p><p>완성월 36개월 이상, 거래가 있는 달 30개월 이상, 최근 월평균 거래 10건 이상일 때 표시합니다. 수집 누락이 있는 지역은 점수를 표시하지 않습니다. 공급·교통·정비사업은 아직 반영하지 않았습니다.</p></details>
     <div class="card">
       <div class="row" style="margin-bottom:8px"><h2 style="margin:0">국면 지도 — 가격 변화 × 거래량 ${tip('벌집순환모형: 거래량이 먼저 움직이고 가격이 따라와요. 오른쪽 아래(불황) → 가운데 오른쪽(회복진입) → 오른쪽 위(회복) 순서로 옮겨가는 지역을 주목하세요. 점에 마우스를 올리면 6개월 전 → 3개월 전 → 지금 이동 경로가 보이고, 누르면 지역 화면으로 가요.')}</h2><span class="spacer"></span><label class="muted" style="font-size:12px"><input type="checkbox" id="trail" ${state.trail ? 'checked' : ''}> 모든 지역 이동 경로</label></div>
       <div class="chart-box tall"><canvas id="phaseMap"></canvas></div>
@@ -702,7 +743,13 @@ async function viewOverview(group, id) {
 
   const rows = regions.map((r) => ({ ...r, ...(state.overview[r.code] || {}) }));
   const thead = app.querySelector('thead'), tbody = app.querySelector('tbody');
+  const visibleRows = () => {
+    const query = norm(document.getElementById('regionQuery').value);
+    const selected = [...app.querySelectorAll('input[name="regionCode"]:checked')].map((x) => x.value);
+    return rows.filter((r) => norm(r.name).includes(query) && (!document.getElementById('likedRegions').checked || regionLikes.has(r.code)) && (!selected.length || selected.includes(r.code)));
+  };
   const render = () => {
+    const rows = visibleRows();
     thead.innerHTML = tableHead(OV_COLS, 'overview', state.sort.overview);
     document.getElementById('ovSort').innerHTML = sortSelect(OV_COLS, 'overview', state.sort.overview);
     tbody.innerHTML = sortRows(rows, OV_COLS, state.sort.overview)
@@ -711,6 +758,7 @@ async function viewOverview(group, id) {
     // 한 줄 요약: 3개월 새 오른 지역 수와 가장 많이 오른 곳.
     // 지역이 하나씩 들어올 때마다 숫자가 바뀌면 오류처럼 보이므로, 다 불러온 뒤에 한 번만 문장을 정한다
     const lead = document.getElementById('ovLead');
+    if (!rows.length) { lead.textContent = '조건에 맞는 지역이 없습니다. 필터를 변경해 주세요.'; return; }
     const pending = rows.filter((r) => !r.ind && !r.error).length;
     if (pending) {
       const done = rows.length - pending;
@@ -732,11 +780,11 @@ async function viewOverview(group, id) {
     const hot = ok.filter((r) => r.ind.volVsAvg > 0.2).length;
     lead.innerHTML = `최근 3개월 ${esc(group)} ${ok.length}개 지역 중 ${up ? `<span class="up">${up}곳이 올랐고</span>` : '오른 곳은 없고'} ${down ? `<span class="down">${down}곳이 내렸어요</span>` : '내린 곳은 없어요'}. 가장 많이 오른 곳은 <a href="#/r/${best.code}">${esc(best.name)}</a>(${delta(best.ind.chg3m)})이고, 거래량이 장기 평균보다 20% 넘게 늘어난 곳은 ${hot}곳이에요.${note}`;
   };
-  tbody.addEventListener('click', (e) => { const tr = e.target.closest('tr[data-href]'); if (tr) location.hash = tr.dataset.href; });
+  tbody.addEventListener('click', (e) => { const like = e.target.closest('[data-like-region]'); if (like) { regionLikes.toggle(like.dataset.likeRegion); render(); refreshMap(); return; } const tr = e.target.closest('tr[data-href]'); if (tr) location.hash = tr.dataset.href; });
 
   const map = phaseMap(document.getElementById('phaseMap'));
   const refreshMap = () => {
-    const pts = rows.filter((r) => r.ind?.chg3m != null && r.ind?.volVsAvg != null)
+    const pts = visibleRows().filter((r) => r.ind?.chg3m != null && r.ind?.volVsAvg != null)
       .map((r) => ({ x: r.ind.volVsAvg * 100, y: r.ind.chg3m * 100, label: r.name.replace(/ \(.+\)/, ''), code: r.code, phase: r.ind.phase,
         trail: (r.ind.trail || []).map((t) => ({ x: t.volVsAvg * 100, y: t.chg3m * 100, ym: t.ym })) }));
     map.data.datasets[0].data = pts;
@@ -744,6 +792,8 @@ async function viewOverview(group, id) {
     map.update('none');
   };
   document.getElementById('trail').addEventListener('change', (e) => { state.trail = e.target.checked; refreshMap(); });
+  for (const el of app.querySelectorAll('#regionQuery, #likedRegions, input[name="regionCode"]')) el.addEventListener(el.id === 'regionQuery' ? 'input' : 'change', () => { render(); refreshMap(); });
+  document.getElementById('resetRegions').addEventListener('click', () => { document.getElementById('regionQuery').value = ''; document.getElementById('likedRegions').checked = false; app.querySelectorAll('input[name="regionCode"]').forEach((x) => { x.checked = false; }); render(); refreshMap(); });
   render(); refreshMap();
 
   let i = 0;
@@ -1061,10 +1111,10 @@ async function viewRegion(code, id) {
   });
 
   const thead = app.querySelector('thead'), tbody = app.querySelector('tbody'), q = document.getElementById('q');
-  const cols = [...APT_COLS, ['star', '', null, (r) => `<button class="star ${watch.has(code, r.key) ? 'on' : ''}" data-key="${esc(r.key)}" title="관심단지">★</button>`]];
+  const cols = [...APT_COLS, ['star', '', null, (r) => `<button class="star ${watch.has(code, r.key) ? 'on' : ''}" data-key="${esc(r.key)}" title="관심단지에 좋아요 (이 브라우저에 저장)">★</button>`]];
   const render = () => {
     const term = q.value.trim();
-    const rows = d.apartments.filter((r) => !term || r.apt.includes(term) || r.dong.includes(term));
+    const rows = d.apartments.filter((r) => !term || A.apartmentNames(code, r.dong, r.apt).some((n) => norm(n).includes(norm(term))) || norm(r.dong).includes(norm(term)));
     thead.innerHTML = tableHead(cols, 'apts', state.sort.apts);
     document.getElementById('aptSort').innerHTML = sortSelect(cols, 'apts', state.sort.apts);
     tbody.innerHTML = sortRows(rows, cols, state.sort.apts).slice(0, 300)
@@ -1087,6 +1137,7 @@ async function viewRegion(code, id) {
 
 // ---------- 단지 상세 ----------
 async function viewApt(code, key, id) {
+  key = A.canonicalKey(code, key);
   const region = requireRegion(code);
   const opts = monthOpts(APT_MONTHS);
   const months = getMonths(`apt.${code}.${key}`, opts, 36);
@@ -1108,7 +1159,7 @@ async function viewApt(code, key, id) {
     <div class="crumb"><a href="#/g/${esc(region.group)}">${esc(region.group)}</a> › <a href="#/r/${code}">${esc(region.name)}</a> ›</div>
     <div class="row">
       <h1>${esc(apt.name)}</h1>
-      <button class="star ${watch.has(code, key) ? 'on' : ''}" id="star" title="관심단지" style="font-size:22px">★</button>
+      <button class="star ${watch.has(code, key) ? 'on' : ''}" id="star" title="관심단지에 좋아요 (이 브라우저에 저장)" style="font-size:22px">★</button>
       <span class="muted">${esc(apt.dong)} ${esc(apt.jibun)} · ${apt.built || '–'}년 준공</span>
       <span class="spacer"></span>${monthsSeg(months, opts)}
     </div>
@@ -1119,8 +1170,8 @@ async function viewApt(code, key, id) {
       <a href="https://rt.molit.go.kr/" target="_blank" rel="noopener" class="copy-name" title="단지명이 복사돼요. 검색창에 붙여넣으세요">국토부 실거래가</a>
       <span class="muted" id="copied" style="font-size:12px"></span>
     </p>
-    <div class="row" style="margin-bottom:16px"><span class="muted">전용면적</span><div class="seg" id="areas">${d.areas.map((a) => `<button data-a="${a.area}" class="${a.area === areaSel ? 'on' : ''}">${a.area}㎡ <span class="muted">(${a.count})</span></button>`).join('')}</div></div>
-    <div id="areaView"></div>`;
+    <div class="row" style="margin-bottom:16px"><span class="muted">전용면적</span><div class="seg" id="areas">${d.areas.map((a) => `<button data-a="${a.area}" class="${a.area === areaSel ? 'on' : ''}">${a.area}㎡ <span class="muted">(매매 ${a.count}건)</span></button>`).join('')}</div></div>
+    <p class="muted">조회 기간에 매매 또는 전세 거래가 있는 전용면적입니다. 원본 면적을 소수 둘째 자리까지 구분합니다.${A.apartmentNames(code, apt.dong, apt.name).length > 1 ? ` 원본 명칭: ${esc(A.apartmentNames(code, apt.dong, apt.name).filter((n) => n !== apt.name).join(', '))}` : ''}</p><div id="areaView"></div>`;
   bindMonths(`apt.${code}.${key}`);
   app.querySelectorAll('.copy-name').forEach((a) => a.addEventListener('click', () => {
     navigator.clipboard?.writeText(apt.name).then(() => {
@@ -1143,19 +1194,19 @@ async function viewApt(code, key, id) {
     destroyCharts();
     const sel = d.areas.find((a) => a.area === areaSel);
     const ind = sel.indicators;
-    const all = d.trades.filter((t) => String(Math.round(t.area)) === areaSel);
+    const all = d.trades.filter((t) => A.areaKey(t.area) === areaSel);
     const trades = all.filter((t) => !t.bulk);
-    const jeonse = d.rents.filter((t) => String(Math.round(t.area)) === areaSel && t.monthly === 0);
+    const jeonse = d.rents.filter((t) => A.areaKey(t.area) === areaSel && t.monthly === 0);
     const recent = median(trades.slice(-3).map((t) => t.price));
-    const max = trades.reduce((a, b) => (b.price > a.price ? b : a));
+    const max = trades.length ? trades.reduce((a, b) => (b.price > a.price ? b : a)) : null;
     const last = trades[trades.length - 1];
     const jRecent = median(jeonse.slice(-5).map((t) => t.deposit));
 
     document.getElementById('areaView').innerHTML = `
       <div class="kpis">
-        <div class="kpi"><div class="label">최근 시세 (최근 3건 중위)</div><div class="value num">${fmtEok(recent)}</div><div class="hint">마지막 ${last.date.slice(2).replace(/-/g, '.')} · ${last.floor}층 ${fmtEok(last.price)}</div></div>
-        <div class="kpi"><div class="label">기간 내 최고가</div><div class="value num">${fmtEok(max.price)}</div><div class="hint">${max.date.slice(2).replace(/-/g, '.')} · ${max.floor}층</div></div>
-        <div class="kpi"><div class="label">최고가 대비</div><div class="value num">${delta(recent / max.price - 1)}</div><div class="hint">6개월 이동평균 3개월 변화 ${delta(ind.chg3m)}</div></div>
+        <div class="kpi"><div class="label">최근 시세 (최근 3건 중위)</div><div class="value num">${fmtEok(recent)}</div><div class="hint">마지막 ${last ? `${last.date.slice(2).replace(/-/g, '.')} · ${last.floor}층 ${fmtEok(last.price)}` : '해당 기간 매매 거래 없음'}</div></div>
+        <div class="kpi"><div class="label">기간 내 최고가</div><div class="value num">${fmtEok(max?.price)}</div><div class="hint">${max ? `${max.date.slice(2).replace(/-/g, '.')} · ${max.floor}층` : '해당 기간 매매 거래 없음'}</div></div>
+        <div class="kpi"><div class="label">최고가 대비</div><div class="value num">${delta(recent && max ? recent / max.price - 1 : null)}</div><div class="hint">6개월 이동평균 3개월 변화 ${delta(ind.chg3m)}</div></div>
         <div class="kpi"><div class="label">전세 시세</div><div class="value num">${fmtEok(jRecent)}</div><div class="hint">전세가율 ${fmtPct(ind.jeonseRatio, 0)} · 갭 ${jRecent && recent ? fmtEok(recent - jRecent) : '–'}</div></div>
         <div class="kpi"><div class="label">단지 국면</div><div class="value" style="font-size:16px;margin-top:6px">${phaseChip(ind.phase)}</div><div class="hint">거래가 적은 단지는 지역 국면도 함께 보세요</div></div>
       </div>
@@ -1218,8 +1269,9 @@ async function viewWatch(id) {
     const el = document.getElementById(`w${i}`);
     try {
       const d = await getApt(w.code, w.key, 36);
+      if (isStale(id)) return;
       const main = d.areas[0];
-      const tr = d.trades.filter((t) => !t.bulk && String(Math.round(t.area)) === main.area);
+      const tr = d.trades.filter((t) => !t.bulk && A.areaKey(t.area) === main.area);
       const recent = median(tr.slice(-3).map((t) => t.price));
       // 새 거래: 지난번 확인한 거래일 이후. 처음 보는 단지(seen 없음)는 지금을 기준으로 삼는다
       const market = d.trades.filter((t) => !t.bulk);
@@ -1227,7 +1279,7 @@ async function viewWatch(id) {
       const fresh = w.seen ? market.filter((t) => t.date > w.seen) : [];
       // 신고가: 같은 평형의 이전(확인 시점까지) 최고가를 넘은 새 거래. 이전 거래가 없는 평형은 세지 않는다
       const high = fresh.filter((t) => {
-        const prior = market.filter((o) => o.date <= w.seen && Math.round(o.area) === Math.round(t.area)).map((o) => o.price);
+        const prior = market.filter((o) => o.date <= w.seen && A.areaKey(o.area) === A.areaKey(t.area)).map((o) => o.price);
         return prior.length && t.price > Math.max(...prior);
       });
       const badges = `${fresh.length ? `<span class="tag new">새 거래 ${fresh.length}건</span>` : ''}${high.length ? `<span class="tag high">신고가 ${high.length}건</span>` : ''}`;
@@ -1238,7 +1290,7 @@ async function viewWatch(id) {
         <div class="row" style="font-size:12px;margin-top:6px">최고가 대비 ${delta(recent / main.maxPrice - 1)} · 전세가율 ${fmtPct(main.indicators.jeonseRatio, 0)}</div>
         <div style="margin-top:6px">${phaseChip(main.indicators.phase)}</div>`;
     } catch (e) {
-      el.querySelector(':scope > .muted').textContent = `오류: ${e.message}`;
+      if (!isStale(id)) el.querySelector(':scope > .muted').textContent = `오류: ${e.message}`;
     }
   }));
   if (isStale(id) || list.length < 2) return;

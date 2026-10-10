@@ -27,6 +27,7 @@ const routes = [
     const months = clampMonths(q.get('months'), 60);
     const [{ yms, rows }, rent] = await Promise.all([getRange('trade', code, months), getRange('rent', code, months)]);
     const { series, indicators } = an.regionSummary(yms, rows, rent.rows);
+    indicators.candidate = an.candidateScore(indicators, series);
     return { code, series: series.slice(-25).map(({ ym, ma, count }) => ({ ym, ma, count })), indicators };
   }],
 
