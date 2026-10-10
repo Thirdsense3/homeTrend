@@ -685,7 +685,7 @@ const candidateCell = (r) => {
 };
 function forecastFor(code, horizon) {
   const data = state.forecasts;
-  if (!data || data.source !== 'live' || (state.meta.source || state.meta.mode) !== 'live' || hasMissing(code)) return null;
+  if (!data || data.version !== 2 || data.source !== 'live' || (state.meta.source || state.meta.mode) !== 'live' || hasMissing(code)) return null;
   if (state.meta.yms && state.meta.yms[state.meta.yms.length - 2] !== data.asOf) return null;
   return data.regions?.[code]?.[horizon] || null;
 }
@@ -700,6 +700,7 @@ function forecastNote() {
   if (data.status === 'unavailable') return '단기 예측 데이터를 불러오지 못했습니다.';
   if (data.source !== 'live' || (state.meta.source || state.meta.mode) !== 'live') return '실거래 데이터와 검증 결과가 있을 때 단기 예측을 표시합니다. 데모에서는 표시하지 않습니다.';
   if (state.meta.yms && state.meta.yms[state.meta.yms.length - 2] !== data.asOf) return '예측 기준월이 현재 데이터와 달라 수치를 표시하지 않습니다.';
+  if (data.version !== 2) return '예측 데이터가 갱신되면 표시합니다.';
   const available = Object.values(data.validation || {}).filter((v) => v.status === 'passed');
   return available.length ? `${fmtYm(data.asOf)} 기준월 이후 3·6개월의 구성 보정 평당가(3개월 이동평균) 변화를 검증하며, 통과한 기간·지역의 예측만 표시합니다. 범위는 과거 오차를 참고한 값이며 향후 포함 확률을 보장하지 않습니다.` : '현재 검증 기준을 통과한 단기 예측이 없어 수치를 보류합니다.';
 }
@@ -717,8 +718,8 @@ function forecastCard(code, brokerOnly) {
     ? '<p class="muted">단기 예측은 전체 거래 기준에서만 표시됩니다.</p>'
     : `<div class="kpis">${horizons.map((h) => {
       const f = forecastFor(code, h);
-      return f?.status === 'available' ? `<div class="kpi"><div class="label">${h}개월 뒤 · ${fmtYm(f.targetYm)}</div><div class="value num">${delta(f.change)}</div><div class="hint">오차 참고 범위 ${fmtPct(f.lower)} ~ ${fmtPct(f.upper)}</div><div class="hint">과거 검증 평균 오차 ${(f.regionalMae * 100).toFixed(1)}%p · ${f.intervalSamples}개 지역·시점 표본의 범위 참고</div></div>` : `<div class="kpi"><div class="label">${h}개월 뒤</div><div class="value muted">예측 보류</div><div class="hint">${esc(forecastReason(code, h))}</div></div>`;
-    }).join('')}</div>`}<details><summary>검증 기준과 한계</summary><p>과거 결과가 확인된 표본만 학습에 사용하고, 모델 선택 기간과 최종 검증 기간을 분리합니다. 최종 6개 기준월·200개 지역·시점 이상에서 가격 유지 기준보다 평균 오차가 5% 이상 작고, 오차 범위의 실제 포함률이 70% 이상일 때 표시합니다. 각 지역도 가격 유지 기준보다 오차가 작아야 합니다.</p><p>과거 신고일·정정·취소 이력이 없어 당시 공개된 정보만의 검증은 아닙니다. 인접 월과 지역은 독립 표본이 아니며, 공급·금리·교통·정비사업과 향후 정책 변화는 반영하지 않았습니다. 단지별 매매가나 급등 확률을 뜻하지 않습니다.</p></details></section>`;
+      return f?.status === 'available' ? `<div class="kpi"><div class="label">${h}개월 뒤 · ${fmtYm(f.targetYm)}</div><div class="value num">${delta(f.change)}</div><div class="hint">오차 참고 범위 ${fmtPct(f.lower)} ~ ${fmtPct(f.upper)}</div><div class="hint">지역 평균 오차 ${(f.regionalMae * 100).toFixed(1)}%p (${f.regionalSamples}개 기준월)</div><div class="hint">전체 검증 평균 오차 ${(f.validation.mae * 100).toFixed(1)}%p (${f.validation.sampleCount}개 지역·시점)</div><div class="hint">통과 판정과 같은 표본의 지역 오차라 낙관적일 수 있습니다.</div><div class="hint">범위 산정 ${fmtYm(f.intervalStart)}~${fmtYm(f.intervalEnd)} · ${f.intervalSamples}개 지역·시점</div></div>` : `<div class="kpi"><div class="label">${h}개월 뒤</div><div class="value muted">예측 보류</div><div class="hint">${esc(forecastReason(code, h))}</div></div>`;
+    }).join('')}</div>`}<details><summary>검증 기준과 한계</summary><p>과거 결과가 확인된 표본만 학습에 사용하고, 모델 선택 기간과 최종 검증 기간을 분리합니다. 최종 6개 기준월·200개 지역·시점 이상에서 가격 유지 기준보다 평균 오차가 5% 이상 작고, 오차 범위의 실제 포함률이 70% 이상일 때 표시합니다. 각 지역도 가격 유지 기준보다 오차가 작아야 합니다. 지역별 통과 판정과 지역 평균 오차는 같은 6개 기준월에서 계산하므로, 통과 지역의 오차가 낙관적으로 보일 수 있습니다.</p><p>과거 신고일·정정·취소 이력이 없어 당시 공개된 정보만의 검증은 아닙니다. 인접 월과 지역은 독립 표본이 아니며, 공급·금리·교통·정비사업과 향후 정책 변화는 반영하지 않았습니다. 단지별 매매가나 급등 확률을 뜻하지 않습니다.</p></details></section>`;
 }
 const regionLikes = {
   list() { try { const v = JSON.parse(localStorage.getItem('homeTrend.regionLikes')); return Array.isArray(v) ? v.filter((x) => typeof x === 'string') : []; } catch (_) { return []; } },
@@ -742,8 +743,8 @@ const OV_COLS = [
   ['jeonseRatio', '전세가율', (r) => r.ind?.jeonseRatio, (r) => fmtPct(r.ind?.jeonseRatio, 0)],
   ['phase', '국면', (r) => r.ind?.phase?.id, (r) => (r.error ? `<span class="err" title="${esc(r.error)}">오류</span>` : r.ind ? phaseChip(r.ind.phase) : '<span class="muted">불러오는 중…</span>')],
   ['candidate', '상승 후보 (실험)', (r) => hasMissing(r.code) ? null : r.ind?.candidate?.score, candidateCell],
-  ['forecast3', '3개월 예측 (실험)', (r) => forecastFor(r.code, 3)?.status === 'available' ? forecastFor(r.code, 3).change : null, (r) => forecastCell(r, 3)],
-  ['forecast6', '6개월 예측 (실험)', (r) => forecastFor(r.code, 6)?.status === 'available' ? forecastFor(r.code, 6).change : null, (r) => forecastCell(r, 6)],
+  ['forecast3', '3개월 예측 (실험)', null, (r) => forecastCell(r, 3)],
+  ['forecast6', '6개월 예측 (실험)', null, (r) => forecastCell(r, 6)],
   ['spark', '24개월 추이', null, (r) => (r.series ? sparkline(r.series.slice(-24).map((s) => s.ma)) : '')],
 ];
 

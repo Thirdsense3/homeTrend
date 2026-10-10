@@ -62,3 +62,19 @@ test('데모·이력 부족·가격 유지보다 개선이 없는 모델은 수�
   assert.equal(flat.status, 'withheld');
   assert.ok(Object.values(flat.regions).every((r) => Object.values(r).every((h) => h.status === 'withheld' && h.change === undefined)));
 });
+
+
+test('표시 범위는 최종 검증에 사용한 보정 폭이며 검증 구간으로 다시 산정하지 않는다', () => {
+  const p = panels();
+  const result = f.buildForecasts(p, { source: 'live' });
+  const evaluation = f.evaluate(f.samplesFor(p, 3), 3, result.asOf);
+  const prediction = Object.values(result.regions).find(r=>r[3]?.status==='available')[3];
+  assert.equal(result.version,2);
+  assert.equal(prediction.intervalSamples,evaluation.report.calibrationCount);
+  assert.equal(prediction.intervalStart,evaluation.report.calibrationStart);
+  assert.equal(prediction.intervalEnd,evaluation.report.calibrationEnd);
+  assert.ok(prediction.intervalEnd < evaluation.report.testStart);
+  assert.ok(Math.abs((Math.log1p(prediction.upper)-Math.log1p(prediction.lower))/2-evaluation.width)<1e-12);
+  assert.equal(prediction.validation.intervalWidthLog,evaluation.width);
+  assert.equal(prediction.regionalSamples,6);
+});

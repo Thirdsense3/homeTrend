@@ -25,7 +25,7 @@ const routes = [
     const file = path.join(__dirname, 'dist', 'data', 'forecasts.json');
     if (!fs.existsSync(file)) throw notFound('예측 데이터가 없습니다. npm run build로 생성하세요');
     const data = JSON.parse(fs.readFileSync(file, 'utf8'));
-    if (data.source !== mode() || (data.source === 'live' && data.asOf !== monthRange(2)[0])) throw notFound('현재 데이터에 맞는 예측 빌드가 필요합니다');
+    if (data.version !== 2 || data.source !== mode() || (data.source === 'live' && data.asOf !== monthRange(2)[0])) throw notFound('현재 데이터에 맞는 예측 빌드가 필요합니다');
     return data;
   }],
 
