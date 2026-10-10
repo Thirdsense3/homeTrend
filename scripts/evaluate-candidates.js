@@ -16,8 +16,8 @@ for (const r of meta.regions) {
   if ((meta.missing || []).some((m) => m.startsWith(`${r.code}/`))) { skippedMissing++; continue; }
   const file = fs.existsSync(path.join(root, 'region', `${r.code}.json`)) ? path.join(root, 'region', `${r.code}.json`) : path.join(root, `${r.code}.json`);
   const p = JSON.parse(fs.readFileSync(file, 'utf8'));
-  const t = an.normalizeRows(r.code, p.t.map(([i,d,a,f,price,direct]) => ({dong:p.apts[i][0],apt:p.apts[i][1],jibun:p.apts[i][3],date:date(d),area:a/100,floor:f,price,kind:direct?'직거래':'중개거래'})));
-  const j = an.normalizeRows(r.code, p.j.map(([i,d,a,f,deposit]) => ({dong:p.apts[i][0],apt:p.apts[i][1],jibun:p.apts[i][3],date:date(d),area:a/100,floor:f,deposit,monthly:0})));
+  const t = an.normalizeRows(r.code, p.t.map(([i,d,a,f,price,direct,source]) => ({dong:p.apts[i][0],apt:p.apts[i][1],jibun:p.apts[i][3],sourceApt:p.names?.[source] || p.apts[i][1],date:date(d),area:a/100,floor:f,price,kind:direct?'직거래':'중개거래'})));
+  const j = an.normalizeRows(r.code, p.j.map(([i,d,a,f,deposit,source]) => ({dong:p.apts[i][0],apt:p.apts[i][1],jibun:p.apts[i][3],sourceApt:p.names?.[source] || p.apts[i][1],date:date(d),area:a/100,floor:f,deposit,monthly:0})));
   // 완성월36개 + 신고 중인 마지막 달 하나를 포함한 시점부터, 6개월 간격.
   for (let n = 37; n + horizon <= p.yms.length; n += 6) {
     const yms = p.yms.slice(0, n);

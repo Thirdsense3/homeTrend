@@ -68,10 +68,11 @@ function notFound(msg = 'not found') {
 
 function serveStatic(res, pathname) {
   // 분석 모듈은 서버와 브라우저가 같은 파일을 쓴다
-  const file = pathname === '/analyze.js'
-    ? path.join(__dirname, 'lib', 'analyze.js')
+  const shared = ['/analyze.js', '/complexes.js'].includes(pathname);
+  const file = shared
+    ? path.join(__dirname, 'lib', path.basename(pathname))
     : path.normalize(path.join(PUBLIC, pathname === '/' ? 'index.html' : pathname));
-  if ((pathname !== '/analyze.js' && !file.startsWith(PUBLIC + path.sep)) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) {
+  if ((!shared && !file.startsWith(PUBLIC + path.sep)) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) {
     res.writeHead(404).end('not found');
     return;
   }

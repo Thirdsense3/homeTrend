@@ -24,12 +24,14 @@ function unpack(p, months, code) {
   const yms = p.yms.slice(-months);
   const from = Number(yms[0] + '01');
   const apts = p.apts;
-  const trades = p.t.filter((r) => r[1] >= from).map(([i, d, a, floor, price, direct]) => ({
+  const trades = p.t.filter((r) => r[1] >= from).map(([i, d, a, floor, price, direct, source]) => ({
     dong: apts[i][0], apt: apts[i][1], built: apts[i][2], jibun: apts[i][3],
+    sourceApt: p.names?.[source] || apts[i][1],
     date: dateStr(d), area: a / 100, floor, price, kind: direct ? '직거래' : '중개거래',
   }));
-  const rents = p.j.filter((r) => r[1] >= from).map(([i, d, a, floor, deposit]) => ({
+  const rents = p.j.filter((r) => r[1] >= from).map(([i, d, a, floor, deposit, source]) => ({
     dong: apts[i][0], apt: apts[i][1], built: apts[i][2], jibun: apts[i][3],
+    sourceApt: p.names?.[source] || apts[i][1],
     date: dateStr(d), area: a / 100, floor, deposit, monthly: 0,
   }));
   return { yms, trades: A.normalizeRows(code, trades), rents: A.normalizeRows(code, rents) };
@@ -1232,10 +1234,10 @@ async function viewApt(code, key, id) {
       </div>
       <div class="grid2">
         <div class="card table-wrap"><h2>최근 매매</h2><table><thead><tr><th class="l">계약일</th><th>층</th><th>거래가</th><th>평당가</th><th class="l">유형</th></tr></thead><tbody>
-          ${all.slice(-25).reverse().map((t) => `<tr${t.bulk ? ' class="muted"' : ''}><td class="l">${t.date.slice(2).replace(/-/g, '.')}</td><td>${t.floor}</td><td>${fmtEok(t.price)}</td><td>${fmtMan(t.price / (t.area / PYEONG))}</td><td class="l muted">${esc(t.kind)}${t.bulk ? ` · <span class="tag" title="같은 날 직거래 ${BULK_HINT}">일괄</span>` : ''}</td></tr>`).join('')}
+          ${all.slice(-25).reverse().map((t) => `<tr${t.bulk ? ' class="muted"' : ''}><td class="l">${t.date.slice(2).replace(/-/g, '.')}</td><td>${t.floor}</td><td>${fmtEok(t.price)}</td><td>${fmtMan(t.price / (t.area / PYEONG))}</td><td class="l muted">${esc(t.kind)}${t.sourceApt && t.sourceApt !== apt.name ? ` · ${esc(t.sourceApt)}` : ''}${t.bulk ? ` · <span class="tag" title="같은 날 직거래 ${BULK_HINT}">일괄</span>` : ''}</td></tr>`).join('')}
         </tbody></table></div>
-        <div class="card table-wrap"><h2>최근 전세</h2><table><thead><tr><th class="l">계약일</th><th>층</th><th>보증금</th></tr></thead><tbody>
-          ${jeonse.slice(-25).reverse().map((t) => `<tr><td class="l">${t.date.slice(2).replace(/-/g, '.')}</td><td>${t.floor}</td><td>${fmtEok(t.deposit)}</td></tr>`).join('') || '<tr><td class="l muted" colspan="3">전세 거래 없음</td></tr>'}
+        <div class="card table-wrap"><h2>최근 전세</h2><table><thead><tr><th class="l">계약일</th><th>층</th><th>보증금</th><th class="l">원본 명칭</th></tr></thead><tbody>
+          ${jeonse.slice(-25).reverse().map((t) => `<tr><td class="l">${t.date.slice(2).replace(/-/g, '.')}</td><td>${t.floor}</td><td>${fmtEok(t.deposit)}</td><td class="l muted">${esc(t.sourceApt || t.apt)}</td></tr>`).join('') || '<tr><td class="l muted" colspan="4">전세 거래 없음</td></tr>'}
         </tbody></table></div>
       </div>`;
 

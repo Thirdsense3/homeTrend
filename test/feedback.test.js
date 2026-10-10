@@ -83,7 +83,47 @@ test('단지 목록이 없어도 지역 검색은 즉시 되고 한진 별칭으
 test('이전 배포의 분리된 원본도 복원 과정에서 대표 단지와 정확한 면적을 유지한다', () => {
   const { unpack } = browserData();
   const p = pack(['202601'],[row('한신',68.13),row('한진(609-1)',59.58)],[]);
+  delete p.names; p.v = 1; p.t = p.t.map((r) => r.slice(0,6));
   const raw = unpack(p,36,'11290');
   assert.equal(new Set(raw.trades.map(an.aptKey)).size,1);
   assert.equal(raw.trades[0].area,68.13);
+});
+
+test('모든 검증 카탈로그 항목은 구역 내 원본 별칭을 연결하고 다른 지번은 유지한다', () => {
+  const aliases = require('../lib/complexes');
+  assert.ok(aliases.length > 1);
+  const seen = new Set();
+  for (const a of aliases) {
+    assert.ok(a.source.startsWith('https://'));
+    for (const name of a.names) {
+      const id = `${a.code}|${a.dong}|${name}`;
+      assert.ok(!seen.has(id), `중복 별칭: ${id}`); seen.add(id);
+      const original = { ...row(name,84.87),dong:a.dong,jibun:a.jibun };
+      const [normalized] = an.normalizeRows(a.code,[original]);
+      assert.equal(normalized.apt,a.name);
+      assert.equal(normalized.sourceApt,name);
+      assert.equal(an.canonicalKey(a.code,`${a.dong}|${name}`),`${a.dong}|${a.name}`);
+      assert.equal(an.normalizeRows(a.code,[{...original,jibun:'다른 지번'}])[0].apt,name);
+    }
+  }
+});
+
+test('대표 단지로 압축해도 v2 거래별 원본 명칭을 복원한다', () => {
+  const { unpack } = browserData();
+  const raw = [row('성산시영(선경)',50.03,{dong:'성산동',jibun:'446'}),row('성산시영(대우)',50.03,{dong:'성산동',jibun:'446'})];
+  const normalized = an.normalizeRows('11440',raw);
+  const p = pack(['202601'],normalized,normalized.map((r)=>({...r,monthly:0,deposit:50000})));
+  assert.equal(p.apts.length,1);
+  const restored = unpack(p,36,'11440');
+  assert.deepEqual(Array.from(restored.trades, r=>r.sourceApt), raw.map(r=>r.apt));
+  assert.deepEqual(Array.from(restored.rents, r=>r.sourceApt), raw.map(r=>r.apt));
+  assert.ok(restored.trades.every(r=>r.apt==='성산시영'));
+});
+
+test('통합 전후 지역 보정 지수는 원본 구역별 가격 차이를 유지한다', () => {
+  const yms = Array.from({length:24},(_,i)=>`${2024+Math.floor(i/12)}${String(i%12+1).padStart(2,'0')}`);
+  const raw = yms.flatMap((ym,i)=>['성산시영(선경)','성산시영(대우)'].flatMap((apt,k)=>Array.from({length:k?i+1:24-i},()=>row(apt,50.03,{dong:'성산동',jibun:'446',date:`${ym.slice(0,4)}-${ym.slice(4)}-01`,price:k?100000:50000}))));
+  const before = an.regionSummary(yms,raw,[]);
+  const after = an.regionSummary(yms,an.normalizeRows('11440',raw),[]);
+  assert.deepEqual(after.series.map(r=>r.ma),before.series.map(r=>r.ma));
 });

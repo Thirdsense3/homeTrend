@@ -85,6 +85,7 @@ function write(rel, data) {
   for (const f of fs.readdirSync(path.join(ROOT, 'public'))) {
     fs.copyFileSync(path.join(ROOT, 'public', f), path.join(DIST, f));
   }
+  fs.copyFileSync(path.join(ROOT, 'lib', 'complexes.js'), path.join(DIST, 'complexes.js'));
   fs.copyFileSync(path.join(ROOT, 'lib', 'analyze.js'), path.join(DIST, 'analyze.js'));
   const html = fs.readFileSync(path.join(DIST, 'index.html'), 'utf8')
     .replace('<script src="analyze.js"></script>', '<script>window.HT_STATIC = true;</script>\n  <script src="analyze.js"></script>');
