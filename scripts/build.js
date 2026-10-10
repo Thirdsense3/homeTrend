@@ -8,6 +8,7 @@ const an = require('../lib/analyze');
 const { pack } = require('../lib/pack');
 const forecast = require('../lib/forecast');
 const { getMacro } = require('../lib/ecos');
+const { getReb } = require('../lib/reb');
 const regions = require('../data/regions.json');
 
 const ROOT = path.join(__dirname, '..');
@@ -83,6 +84,17 @@ function write(rel, data) {
     } else console.log('ECOS_API_KEY 없음 → 금리·심리 지표 생략');
   } catch (e) {
     console.warn(`한국은행 지표 실패 (생략): ${e.message}`);
+  }
+
+  // 주간 가격지수·매입자 거주지 (한국부동산원 R-ONE). 키가 없거나 실패해도 실거래 배포는 그대로 진행
+  try {
+    const reb = await getReb(MONTHS);
+    if (reb) {
+      write('data/reb.json', { builtAt: new Date().toISOString(), ...reb });
+      console.log(`부동산원 지표 ${Object.keys(reb.regions).length}개 지역${reb.missing.length ? ` (실패: ${reb.missing.join(', ')})` : ''}`);
+    } else console.log('REB_API_KEY 없음 → 부동산원 지표 생략');
+  } catch (e) {
+    console.warn(`부동산원 지표 실패 (생략): ${e.message}`);
   }
 
   // 페이지: public/ 복사 + 분석 모듈 + 정적 모드 표시
