@@ -6,6 +6,7 @@ const path = require('path');
 const { getMonth, monthRange, mode, pool } = require('../lib/data');
 const an = require('../lib/analyze');
 const { pack } = require('../lib/pack');
+const forecast = require('../lib/forecast');
 const { getMacro } = require('../lib/ecos');
 const regions = require('../data/regions.json');
 
@@ -46,18 +47,22 @@ function write(rel, data) {
 
   let done = 0;
   const search = {};
+  const panels = [];
   await pool(regions, 2, async (r) => {
     const [trades, rents] = [await fetchAll('trade', r.code), await fetchAll('rent', r.code)];
     bytes += write(`data/region/${r.code}.json`, pack(yms, trades, rents));
     search[r.code] = an.searchEntries(trades);
     // 지표(고점·장기 평균 거래량)는 받은 기간 전체로 계산하고, 스파크라인·궤적용 시계열만 잘라 보낸다
     const { series, indicators } = an.regionSummary(yms, trades, rents);
+    indicators.candidate = failures.some((f) => f.code === r.code) ? null : an.candidateScore(indicators, series);
+    if (mode() === 'live' && !failures.some((f) => f.code === r.code)) panels.push(forecast.preparePanel(r.code, yms, trades, rents));
     write(`data/overview/${r.code}.json`, { code: r.code, series: series.slice(-OVERVIEW_MONTHS).map(({ ym, ma, count }) => ({ ym, ma, count })), indicators });
     console.log(`[${++done}/${regions.length}] ${r.name}: 매매 ${trades.length.toLocaleString()} · 전월세 ${rents.length.toLocaleString()}`);
   });
 
   // 전체 단지 검색 목록 (상단 검색창)
   write('data/search.json', { v: 1, regions: search });
+  write('data/forecasts.json', forecast.buildForecasts(panels, { source: mode(), missing: failures.map(({ code, kind, ym }) => `${code}/${kind}/${ym}`) }));
 
   write('data/meta.json', {
     mode: 'static',
@@ -84,6 +89,7 @@ function write(rel, data) {
   for (const f of fs.readdirSync(path.join(ROOT, 'public'))) {
     fs.copyFileSync(path.join(ROOT, 'public', f), path.join(DIST, f));
   }
+  fs.copyFileSync(path.join(ROOT, 'lib', 'complexes.js'), path.join(DIST, 'complexes.js'));
   fs.copyFileSync(path.join(ROOT, 'lib', 'analyze.js'), path.join(DIST, 'analyze.js'));
   const html = fs.readFileSync(path.join(DIST, 'index.html'), 'utf8')
     .replace('<script src="analyze.js"></script>', '<script>window.HT_STATIC = true;</script>\n  <script src="analyze.js"></script>');

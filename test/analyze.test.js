@@ -153,5 +153,5 @@ test('같은 단지·같은 날 전세 10건 이상(공공임대 일괄 계약 �
 
 test('searchEntries: 단지별 거래 수, 많은 순', () => {
   const rows = [...trades('202501', 5000, 2, 'A'), ...trades('202501', 5000, 5, 'B')];
-  assert.deepStrictEqual(an.searchEntries(rows), [['동', 'B', 5], ['동', 'A', 2]]);
+  assert.deepStrictEqual(an.searchEntries(rows), [['동', 'B', 5, ''], ['동', 'A', 2, '']]);
 });

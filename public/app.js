@@ -18,29 +18,34 @@ const getMeta = () => api(STATIC ? 'data/meta.json' : '/api/meta');
 const getOverview = (code) => api(STATIC ? `data/overview/${code}.json` : `/api/overview/${code}`);
 // 금리·주택가격 전망 심리 (한국은행). 키가 없어 파일이 없으면 null → 카드를 그리지 않는다
 const getMacro = () => (state.macro ||= api(STATIC ? 'data/macro.json' : '/api/macro').catch(() => null));
+const getForecasts = () => (state.forecastPromise ||= api(STATIC ? 'data/forecasts.json' : '/api/forecasts').then((d) => (state.forecasts = d)).catch(() => (state.forecasts = { status: 'unavailable', regions: {}, validation: {} })));
 
 const dateStr = (n) => { const s = String(n); return `${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}`; };
-function unpack(p, months) {
+function unpack(p, months, code) {
   const yms = p.yms.slice(-months);
   const from = Number(yms[0] + '01');
   const apts = p.apts;
-  const trades = p.t.filter((r) => r[1] >= from).map(([i, d, a, floor, price, direct]) => ({
+  // 조회 기간 밖 단지도 포함해 옛 링크와 관심단지의 주소를 확인한다.
+  (state.complexes ||= {})[code] = apts.map(([dong, apt, built, jibun]) => ({ dong, apt, jibun }));
+  const trades = p.t.filter((r) => r[1] >= from).map(([i, d, a, floor, price, direct, source]) => ({
     dong: apts[i][0], apt: apts[i][1], built: apts[i][2], jibun: apts[i][3],
+    sourceApt: p.names?.[source] || apts[i][1],
     date: dateStr(d), area: a / 100, floor, price, kind: direct ? '직거래' : '중개거래',
   }));
-  const rents = p.j.filter((r) => r[1] >= from).map(([i, d, a, floor, deposit]) => ({
-    dong: apts[i][0], apt: apts[i][1], built: apts[i][2],
+  const rents = p.j.filter((r) => r[1] >= from).map(([i, d, a, floor, deposit, source]) => ({
+    dong: apts[i][0], apt: apts[i][1], built: apts[i][2], jibun: apts[i][3],
+    sourceApt: p.names?.[source] || apts[i][1],
     date: dateStr(d), area: a / 100, floor, deposit, monthly: 0,
   }));
-  return { yms, trades, rents };
+  return { yms, trades: A.normalizeRows(code, trades), rents: A.normalizeRows(code, rents) };
 }
 // 지역 원본은 한 번 받아 메모리에 두고, 지역·단지 화면 모두 여기서 계산
 async function getRaw(code, months) {
   const k = `${code}:${months}`;
   if (!state.raw[k]) {
     state.raw[k] = (STATIC
-      ? (state.raw[code] ||= api(`data/region/${code}.json`)).then((p) => unpack(p, months))
-      : api(`/api/raw/${code}?months=${months}`).then((p) => unpack(p, months))
+      ? (state.raw[code] ||= api(`data/region/${code}.json`)).then((p) => unpack(p, months, code))
+      : api(`/api/raw/${code}?months=${months}`).then((p) => unpack(p, months, code))
     ).catch((e) => { delete state.raw[k]; delete state.raw[code]; throw e; });
   }
   return state.raw[k];
@@ -49,10 +54,13 @@ async function getRaw(code, months) {
 async function getRegion(code, months, brokerOnly) {
   const raw = await getRaw(code, months);
   const trades = brokerOnly ? raw.trades.filter((t) => t.kind !== '직거래') : raw.trades;
-  return { ...A.regionSummary(raw.yms, trades, raw.rents), apartments: A.apartmentList(trades) };
+  const summary = A.regionSummary(raw.yms, trades, raw.rents);
+  summary.indicators.candidate = hasMissing(code) ? null : A.candidateScore(summary.indicators, summary.series);
+  return { ...summary, apartments: A.apartmentList(trades) };
 }
 async function getApt(code, key, months) {
   const { yms, trades, rents } = await getRaw(code, months);
+  key = A.canonicalKey(code, key, state.complexes?.[code]);
   const t = A.markBulk(trades.filter((x) => A.aptKey(x) === key)).sort((a, b) => a.date.localeCompare(b.date));
   if (!t.length) throw new Error('해당 기간에 거래가 없는 단지입니다');
   if (t.every((x) => x.bulk)) throw new Error('해당 기간에 일괄 거래(통매각)만 있어 시세를 계산할 수 없는 단지입니다');
@@ -120,16 +128,31 @@ const phaseChip = (p) => (p ? `<span class="phase" title="${esc(p.note)}"><b>${p
 
 // 관심단지 (브라우저 저장). seen: 마지막으로 확인한 거래일 → 그 뒤 거래를 '새 거래'로 표시
 const watch = {
-  list() { try { return JSON.parse(localStorage.getItem('homeTrend.watch')) || []; } catch (_) { return []; } },
+  list() {
+    try {
+      const raw = JSON.parse(localStorage.getItem('homeTrend.watch'));
+      if (!Array.isArray(raw)) return [];
+      const merged = new Map();
+      for (const w of raw) {
+        if (!w || typeof w.code !== 'string' || typeof w.key !== 'string') continue;
+        const key = A.canonicalKey(w.code, w.key, w.jibun ? [{ dong: w.key.split('|')[0], apt: w.key.split('|').slice(1).join('|'), jibun: w.jibun }] : state.complexes?.[w.code]);
+        const old = merged.get(`${w.code}:${key}`);
+        merged.set(`${w.code}:${key}`, { ...w, key, name: key.split('|').slice(1).join('|'), seen: [old?.seen, w.seen].filter(Boolean).sort().pop() });
+      }
+      return [...merged.values()];
+    } catch (_) { return []; }
+  },
   save(l) { try { localStorage.setItem('homeTrend.watch', JSON.stringify(l)); } catch (_) { /* 저장 불가 */ } },
-  has(code, key) { return this.list().some((w) => w.code === code && w.key === key); },
+  has(code, key) { key = A.canonicalKey(code, key, state.complexes?.[code]); return this.list().some((w) => w.code === code && w.key === key); },
   toggle(item) {
+    item = { ...item, key: A.canonicalKey(item.code, item.key, state.complexes?.[item.code]) };
     let l = this.list();
     l = this.has(item.code, item.key) ? l.filter((w) => !(w.code === item.code && w.key === item.key)) : [...l, item];
     this.save(l);
     return this.has(item.code, item.key);
   },
   markSeen(code, key, date) {
+    key = A.canonicalKey(code, key, state.complexes?.[code]);
     const l = this.list();
     const w = l.find((x) => x.code === code && x.key === key);
     if (w && date && !(w.seen >= date)) { w.seen = date; this.save(l); }
@@ -614,6 +637,7 @@ async function route() {
         b.textContent += ` · ${t.getMonth() + 1}/${t.getDate()} 갱신`;
       }
       b.className = 'badge' + (live ? '' : ' demo');
+      initRegionJump();
     }
     const parts = location.hash.replace(/^#\/?/, '').split('/').map(decodeURIComponent);
     const view = parts[0];
@@ -664,10 +688,28 @@ applyTheme();
 
 // ---------- 전체 검색 (상단): 지역 이름 + 모든 지역의 단지 ----------
 // 목록은 처음 검색창을 누를 때 한 번 받는다 (정적 사이트: 빌드 때 만든 data/search.json)
-const getSearch = () => (state.search ||= api(STATIC ? 'data/search.json' : '/api/search').catch((e) => { state.search = null; throw e; }));
+const getSearch = () => (state.search ||= api(STATIC ? 'data/search.json' : '/api/search').then(async (idx) => {
+  // v1 검색 목록에는 주소가 없다. 별칭이 있는 지역만 원본으로 확인해 중복을 없앤다.
+  await Promise.all(Object.entries(idx.regions).map(async ([code, entries]) => {
+    if (!entries.some(([dong, apt, , jibun]) => jibun === undefined && window.ComplexAliases.some((a) => a.code === code && a.dong === dong && a.names.includes(apt)))) return;
+    try { idx.regions[code] = A.searchEntries((await getRaw(code, 36)).trades); } catch (_) { /* 원본 조회 실패 시 기존 검색 결과 유지 */ }
+  }));
+  return idx;
+}).catch((e) => { state.search = null; throw e; }));
 const norm = (s) => String(s).toLowerCase().replace(/\s+/g, '');
 function searchFlat(idx) {
-  return state.meta.regions.flatMap((r) => (idx.regions[r.code] || []).map(([dong, apt, cnt]) => ({ r, dong, apt, cnt, na: norm(apt), nd: norm(dong) })));
+  return state.meta.regions.flatMap((r) => {
+    const entries = idx.regions[r.code] || [];
+    const grouped = new Map();
+    for (const [dong, name, cnt, jibun] of entries) {
+      const key = A.aptKey(A.normalizeRows(r.code, [{ dong, apt: name, jibun }])[0]);
+      const apt = key.slice(dong.length + 1);
+      const old = grouped.get(key);
+      if (old) { old.cnt += cnt; continue; }
+      grouped.set(key, { r, dong, apt, cnt, na: norm(A.apartmentNames(r.code, dong, apt, jibun).join(' ')), nd: norm(dong) });
+    }
+    return [...grouped.values()];
+  });
 }
 // 지역 → 단지명이 검색어로 시작 → 단지명에 포함 → 동 이름에 포함 순, 같으면 거래 많은 순
 function searchMatch(flat, q) {
@@ -697,14 +739,14 @@ function highlight(text, q) {
     const q = input.value;
     list.hidden = !q.trim();
     if (list.hidden) return;
-    if (!flat) { list.innerHTML = `<div class="gs-msg">${failed ? '검색 목록을 불러오지 못했어요' : '검색 목록 불러오는 중…'}</div>`; return; }
-    items = searchMatch(flat, q);
+    items = searchMatch(flat || [], q);
     sel = Math.min(sel, Math.max(0, items.length - 1));
     list.innerHTML = (items.length
       ? items.map((it, i) => `<a class="gs-item${i === sel ? ' on' : ''}" href="${href(it)}" data-i="${i}">${it.apt
         ? `<b>${highlight(it.apt, q)}</b><span class="muted">${esc(it.r.name)} ${highlight(it.dong, q)} · 거래 ${it.cnt}건</span>`
         : `<b>${highlight(it.r.name, q)}</b><span class="muted">지역 · ${esc(it.r.group)}</span>`}</a>`).join('')
       : '<div class="gs-msg">찾는 단지가 없어요</div>')
+      + (!flat ? `<div class="gs-msg muted">${failed ? '단지 목록을 불러오지 못했어요. 지역은 바로 선택할 수 있어요.' : '단지 목록 불러오는 중…'}</div>` : '')
       + (partial ? '<div class="gs-msg muted">로컬 서버에선 받아 둔 지역의 단지만 검색돼요</div>' : '');
     list.querySelector('.on')?.scrollIntoView({ block: 'nearest' });
   };
@@ -733,8 +775,61 @@ function highlight(text, q) {
 }());
 
 // ---------- 개요: 지역별 비교 ----------
+const hasMissing = (code) => (state.meta?.missing || []).some((m) => m.startsWith(`${code}/`));
+const candidateCell = (r) => {
+  const c = hasMissing(r.code) ? null : r.ind?.candidate;
+  return c ? `<span title="${esc(c.factors.map((f) => `${f.name} ${f.points}점`).join(' · '))}">${c.score}점</span>` : '<span class="muted">–</span>';
+};
+function forecastFor(code, horizon) {
+  const data = state.forecasts;
+  if (!data || data.version !== 2 || data.source !== 'live' || (state.meta.source || state.meta.mode) !== 'live' || hasMissing(code)) return null;
+  if (state.meta.yms && state.meta.yms[state.meta.yms.length - 2] !== data.asOf) return null;
+  return data.regions?.[code]?.[horizon] || null;
+}
+function forecastCell(r, horizon) {
+  const f = forecastFor(r.code, horizon);
+  if (f?.status !== 'available') return '<span class="muted" title="검증 기준 미달·표본 부족·수집 누락 시 예측을 보류합니다">보류</span>';
+  return `<span title="${fmtYm(f.asOf)} → ${fmtYm(f.targetYm)} · 오차 참고 범위 ${fmtPct(f.lower)} ~ ${fmtPct(f.upper)}">${delta(f.change)}<br><small class="muted">${fmtPct(f.lower)} ~ ${fmtPct(f.upper)}</small></span>`;
+}
+function forecastNote() {
+  const data = state.forecasts;
+  if (!data) return '단기 예측 데이터를 확인하는 중입니다.';
+  if (data.status === 'unavailable') return '단기 예측 데이터를 불러오지 못했습니다.';
+  if (data.source !== 'live' || (state.meta.source || state.meta.mode) !== 'live') return '실거래 데이터와 검증 결과가 있을 때 단기 예측을 표시합니다. 데모에서는 표시하지 않습니다.';
+  if (state.meta.yms && state.meta.yms[state.meta.yms.length - 2] !== data.asOf) return '예측 기준월이 현재 데이터와 달라 수치를 표시하지 않습니다.';
+  if (data.version !== 2) return '예측 데이터가 갱신되면 표시합니다.';
+  const available = Object.values(data.validation || {}).filter((v) => v.status === 'passed');
+  return available.length ? `${fmtYm(data.asOf)} 기준월 이후 3·6개월의 구성 보정 평당가(3개월 이동평균) 변화를 검증하며, 통과한 기간·지역의 예측만 표시합니다. 범위는 과거 오차를 참고한 값이며 향후 포함 확률을 보장하지 않습니다.` : '현재 검증 기준을 통과한 단기 예측이 없어 수치를 보류합니다.';
+}
+function forecastReason(code, horizon) {
+  const f = forecastFor(code, horizon);
+  if (hasMissing(code)) return '수집 누락이 있어 예측을 보류합니다.';
+  if (f?.reason === 'regional_validation_failed') return '이 지역에서는 가격 유지 기준보다 오차가 작지 않아 보류합니다.';
+  if (f?.reason === 'validation_failed') return state.forecasts.validation[horizon]?.intervalCoverage < 0.7
+    ? '오차 범위 검증을 통과하지 못해 예측을 보류합니다.' : '가격 유지 기준과 비교한 검증을 통과하지 못해 보류합니다.';
+  return '실거래 이력과 검증 결과가 충분할 때 표시합니다.';
+}
+function forecastCard(code, brokerOnly) {
+  const horizons = [3, 6];
+  return `<section class="card" id="shortForecast"><h2>단기 가격 예측 (실험)</h2><p class="muted">${esc(forecastNote())}</p>${brokerOnly
+    ? '<p class="muted">단기 예측은 전체 거래 기준에서만 표시됩니다.</p>'
+    : `<div class="kpis">${horizons.map((h) => {
+      const f = forecastFor(code, h);
+      return f?.status === 'available' ? `<div class="kpi"><div class="label">${h}개월 뒤 · ${fmtYm(f.targetYm)}</div><div class="value num">${delta(f.change)}</div><div class="hint">오차 참고 범위 ${fmtPct(f.lower)} ~ ${fmtPct(f.upper)}</div><div class="hint">지역 평균 오차 ${(f.regionalMae * 100).toFixed(1)}%p (${f.regionalSamples}개 기준월)</div><div class="hint">전체 검증 평균 오차 ${(f.validation.mae * 100).toFixed(1)}%p (${f.validation.sampleCount}개 지역·시점)</div><div class="hint">통과 판정과 같은 표본의 지역 오차라 낙관적일 수 있습니다.</div><div class="hint">범위 산정 ${fmtYm(f.intervalStart)}~${fmtYm(f.intervalEnd)} · ${f.intervalSamples}개 지역·시점</div></div>` : `<div class="kpi"><div class="label">${h}개월 뒤</div><div class="value muted">예측 보류</div><div class="hint">${esc(forecastReason(code, h))}</div></div>`;
+    }).join('')}</div>`}<details><summary>검증 기준과 한계</summary><p>과거 결과가 확인된 표본만 학습에 사용하고, 모델 선택 기간과 최종 검증 기간을 분리합니다. 최종 6개 기준월·200개 지역·시점 이상에서 가격 유지 기준보다 평균 오차가 5% 이상 작고, 오차 범위의 실제 포함률이 70% 이상일 때 표시합니다. 각 지역도 가격 유지 기준보다 오차가 작아야 합니다. 지역별 통과 판정과 지역 평균 오차는 같은 6개 기준월에서 계산하므로, 통과 지역의 오차가 낙관적으로 보일 수 있습니다.</p><p>과거 신고일·정정·취소 이력이 없어 당시 공개된 정보만의 검증은 아닙니다. 인접 월과 지역은 독립 표본이 아니며, 공급·금리·교통·정비사업과 향후 정책 변화는 반영하지 않았습니다. 단지별 매매가나 급등 확률을 뜻하지 않습니다.</p></details></section>`;
+}
+const regionLikes = {
+  list() { try { const v = JSON.parse(localStorage.getItem('homeTrend.regionLikes')); return Array.isArray(v) ? v.filter((x) => typeof x === 'string') : []; } catch (_) { return []; } },
+  has(code) { return this.list().includes(code); },
+  toggle(code) { const list = this.list(); const next = list.includes(code) ? list.filter((x) => x !== code) : [...list, code]; try { localStorage.setItem('homeTrend.regionLikes', JSON.stringify(next)); } catch (_) {} },
+};
+function initRegionJump() {
+  const select = document.getElementById('regionJump');
+  select.innerHTML = '<option value="">지역 바로가기</option>' + ['서울', '경기'].map((group) => `<optgroup label="${group}">${state.meta.regions.filter((r) => r.group === group).sort((a, b) => a.name.localeCompare(b.name, 'ko')).map((r) => `<option value="${r.code}">${esc(r.name)}</option>`).join('')}</optgroup>`).join('');
+  select.onchange = () => { if (select.value) location.hash = `#/r/${select.value}`; select.value = ''; };
+}
 const OV_COLS = [
-  ['name', '지역', (r) => r.name, (r) => `<a href="#/r/${r.code}">${esc(r.name)}</a>`],
+  ['name', '지역', (r) => r.name, (r) => `<button class="star ${r.liked ? 'on' : ''}" data-like-region="${r.code}" aria-label="${esc(r.name)} 좋아요" aria-pressed="${!!r.liked}">♥</button> <a href="#/r/${r.code}">${esc(r.name)}</a>`],
   ['current', '평당가 (3개월 평균)', (r) => r.ind?.current, (r) => fmtMan(r.ind?.current)],
   ['eq84', '84㎡ 환산', (r) => r.ind?.current, (r) => (r.ind?.current ? fmtEok(Math.round(r.ind.current * 84 / PYEONG / 100) * 100) : '–')],
   ['chg3m', '3개월', (r) => r.ind?.chg3m, (r) => delta(r.ind?.chg3m)],
@@ -744,6 +839,9 @@ const OV_COLS = [
   ['newHighShare', '신고가 비율', (r) => r.ind?.newHighShare, (r) => fmtPct(r.ind?.newHighShare, 0)],
   ['jeonseRatio', '전세가율', (r) => r.ind?.jeonseRatio, (r) => fmtPct(r.ind?.jeonseRatio, 0)],
   ['phase', '국면', (r) => r.ind?.phase?.id, (r) => (r.error ? `<span class="err" title="${esc(r.error)}">오류</span>` : r.ind ? phaseChip(r.ind.phase) : '<span class="muted">불러오는 중…</span>')],
+  ['candidate', '상승 후보 (실험)', (r) => hasMissing(r.code) ? null : r.ind?.candidate?.score, candidateCell],
+  ['forecast3', '3개월 예측 (실험)', null, (r) => forecastCell(r, 3)],
+  ['forecast6', '6개월 예측 (실험)', null, (r) => forecastCell(r, 6)],
   ['spark', '24개월 추이', null, (r) => (r.series ? sparkline(r.series.slice(-24).map((s) => s.ma)) : '')],
 ];
 
@@ -788,7 +886,14 @@ async function viewOverview(group, id) {
   regions.forEach((r) => { if (state.overview[r.code]?.error) delete state.overview[r.code]; });
   app.innerHTML = `
     <h1>${esc(group)} 지역별 시세 트렌드 ${tip('실거래 평당가의 3개월 이동평균 기준 (단지 구성 보정, 신고 진행 중인 지난달·통매각 같은 일괄 거래 제외). 거래량은 최근 3개월을 36개월 평균과 비교해요. 신고가 비율은 최근 3개월 거래 중 같은 단지·평형의 이전 최고가를 넘은 거래 비중으로, 시장이 달아오르면 가장 먼저 올라가요.')}</h1>
+    <div class="card region-filter"><label>구·시 찾기 <input id="regionQuery" type="search" placeholder="예: 성북구"></label>
+      <label><input type="checkbox" id="likedRegions"> 좋아요한 지역만</label>
+      <details><summary>비교할 지역 선택</summary><div class="region-options">${regions.slice().sort((a, b) => a.name.localeCompare(b.name, 'ko')).map((r) => `<label><input type="checkbox" name="regionCode" value="${r.code}">${esc(r.name)}</label>`).join('')}</div></details>
+      <button id="resetRegions">필터 초기화</button></div>
+    <p class="muted">♥ 좋아요는 이 브라우저에 저장됩니다. 단지는 ★ 관심단지로 저장할 수 있어요.</p>
     <p class="lead" id="ovLead"></p>
+    <p class="muted" id="forecastNote"></p>
+    <details class="card candidate-note"><summary>상승 후보 점수 (실험) — 계산 기준</summary><p>가격 흐름 50점 · 거래량 30점 · 전세가율 20점으로 현재 관측 지표를 비교합니다. 점수가 높을수록 최근 상승·거래 신호가 강합니다. 5년 후 급등 확률이나 예상 수익률은 아니며, 장기 예측 성능은 아직 검증되지 않았습니다.</p><p>완성월 36개월 이상, 거래가 있는 달 30개월 이상, 최근 월평균 거래 10건 이상일 때 표시합니다. 수집 누락이 있는 지역은 점수를 표시하지 않습니다. 공급·교통·정비사업은 아직 반영하지 않았습니다.</p></details>
     <div class="card">
       <div class="row" style="margin-bottom:8px"><h2 style="margin:0">국면 지도 — 가격 변화 × 거래량 ${tip('벌집순환모형: 거래량이 먼저 움직이고 가격이 따라와요. 오른쪽 아래(불황) → 가운데 오른쪽(회복진입) → 오른쪽 위(회복) 순서로 옮겨가는 지역을 주목하세요. 점에 마우스를 올리면 6개월 전 → 3개월 전 → 지금 이동 경로가 보이고, 누르면 지역 화면으로 가요. ‘모든 지역 최근 이동 방향’을 켜면 지역마다 3개월 전 → 지금 움직임을 화살표로 보여줘요.')}</h2><span class="spacer"></span><label class="muted" style="font-size:12px"><input type="checkbox" id="trail" ${state.trail ? 'checked' : ''}> 모든 지역 최근 이동 방향</label></div>
       <div class="chart-box tall"><canvas id="phaseMap"></canvas></div>
@@ -799,7 +904,15 @@ async function viewOverview(group, id) {
 
   const rows = regions.map((r) => ({ ...r, ...(state.overview[r.code] || {}) }));
   const thead = app.querySelector('thead'), tbody = app.querySelector('tbody');
+  const visibleRows = () => {
+    const query = norm(document.getElementById('regionQuery').value);
+    const selected = [...app.querySelectorAll('input[name="regionCode"]:checked')].map((x) => x.value);
+    const liked = new Set(regionLikes.list());
+    return rows.map((r) => ({ ...r, liked: liked.has(r.code) })).filter((r) => norm(r.name).includes(query) && (!document.getElementById('likedRegions').checked || liked.has(r.code)) && (!selected.length || selected.includes(r.code)));
+  };
   const render = () => {
+    const rows = visibleRows();
+    document.getElementById('forecastNote').textContent = forecastNote();
     thead.innerHTML = tableHead(OV_COLS, 'overview', state.sort.overview);
     document.getElementById('ovSort').innerHTML = sortSelect(OV_COLS, 'overview', state.sort.overview);
     tbody.innerHTML = sortRows(rows, OV_COLS, state.sort.overview)
@@ -808,6 +921,7 @@ async function viewOverview(group, id) {
     // 한 줄 요약: 3개월 새 오른 지역 수와 가장 많이 오른 곳.
     // 지역이 하나씩 들어올 때마다 숫자가 바뀌면 오류처럼 보이므로, 다 불러온 뒤에 한 번만 문장을 정한다
     const lead = document.getElementById('ovLead');
+    if (!rows.length) { lead.textContent = '조건에 맞는 지역이 없습니다. 필터를 변경해 주세요.'; return; }
     const pending = rows.filter((r) => !r.ind && !r.error).length;
     if (pending) {
       const done = rows.length - pending;
@@ -829,11 +943,11 @@ async function viewOverview(group, id) {
     const hot = ok.filter((r) => r.ind.volVsAvg > 0.2).length;
     lead.innerHTML = `최근 3개월 ${esc(group)} ${ok.length}개 지역 중 ${up ? `<span class="up">${up}곳이 올랐고</span>` : '오른 곳은 없고'} ${down ? `<span class="down">${down}곳이 내렸어요</span>` : '내린 곳은 없어요'}. 가장 많이 오른 곳은 <a href="#/r/${best.code}">${esc(best.name)}</a>(${delta(best.ind.chg3m)})이고, 거래량이 장기 평균보다 20% 넘게 늘어난 곳은 ${hot}곳이에요.${note}`;
   };
-  tbody.addEventListener('click', (e) => { const tr = e.target.closest('tr[data-href]'); if (tr) location.hash = tr.dataset.href; });
+  tbody.addEventListener('click', (e) => { const like = e.target.closest('[data-like-region]'); if (like) { regionLikes.toggle(like.dataset.likeRegion); render(); refreshMap(); return; } const tr = e.target.closest('tr[data-href]'); if (tr) location.hash = tr.dataset.href; });
 
   const map = phaseMap(document.getElementById('phaseMap'));
   const refreshMap = () => {
-    const pts = rows.filter((r) => r.ind?.chg3m != null && r.ind?.volVsAvg != null)
+    const pts = visibleRows().filter((r) => r.ind?.chg3m != null && r.ind?.volVsAvg != null)
       .map((r) => ({ x: r.ind.volVsAvg * 100, y: r.ind.chg3m * 100, label: r.name.replace(/ \(.+\)/, ''), code: r.code, phase: r.ind.phase,
         trail: (r.ind.trail || []).map((t) => ({ x: t.volVsAvg * 100, y: t.chg3m * 100, ym: t.ym })) }));
     map.data.datasets[0].data = pts;
@@ -841,7 +955,10 @@ async function viewOverview(group, id) {
     map.update('none');
   };
   document.getElementById('trail').addEventListener('change', (e) => { state.trail = e.target.checked; refreshMap(); });
+  for (const el of app.querySelectorAll('#regionQuery, #likedRegions, input[name="regionCode"]')) el.addEventListener(el.id === 'regionQuery' ? 'input' : 'change', () => { render(); refreshMap(); });
+  document.getElementById('resetRegions').addEventListener('click', () => { document.getElementById('regionQuery').value = ''; document.getElementById('likedRegions').checked = false; app.querySelectorAll('input[name="regionCode"]').forEach((x) => { x.checked = false; }); render(); refreshMap(); });
   render(); refreshMap();
+  getForecasts().then(() => { if (!isStale(id)) render(); });
 
   let i = 0;
   const todo = rows.filter((r) => !r.ind && !r.error);
@@ -1112,7 +1229,7 @@ async function viewRegion(code, id) {
   const months = getMonths(`region.${code}`, opts, Math.min(60, state.meta.months || 60));
   const brokerOnly = getKind() === 'broker';
   showLoading(`<div class="crumb"><a href="#/g/${esc(region.group)}">${esc(region.group)}</a> ›</div><h1>${esc(region.name)}</h1>${skeleton(`실거래 ${months}개월치 불러오는 중… (처음 보는 기간은 국토부 API 호출로 30초 정도 걸릴 수 있어요)`)}`);
-  const d = await getRegion(code, months, brokerOnly);
+  const [d] = await Promise.all([getRegion(code, months, brokerOnly), getForecasts()]);
   if (isStale(id)) return;
   destroyCharts();
   const ind = d.indicators;
@@ -1130,6 +1247,7 @@ async function viewRegion(code, id) {
       <div class="kpi"><div class="label">전세가율 (최근 6개월)</div><div class="value num">${fmtPct(ind.jeonseRatio, 0)}</div><div class="hint">평당 전세가 ÷ 평당 매매가</div></div>
       <div class="kpi"><div class="label">신고가 비율 (최근 3개월)</div><div class="value num">${fmtPct(ind.newHighShare, 0)}</div><div class="hint">직전 거래보다 ${ind.upShare != null ? `오름 ${fmtPct(ind.upShare, 0)} · 내림 ${fmtPct(ind.downShare, 0)}` : '–'}</div></div>
     </div>
+    ${forecastCard(code, brokerOnly)}
     ${ind.phase ? `<p class="phase-note card">${ind.phase.id ? `${ind.phase.id}국면 ` : ''}<b>${esc(ind.phase.name)}</b> — ${esc(ind.phase.note)}</p>` : ''}
     <div class="card">
       <div class="tv-head">
@@ -1192,10 +1310,12 @@ async function viewRegion(code, id) {
   });
 
   const thead = app.querySelector('thead'), tbody = app.querySelector('tbody'), q = document.getElementById('q');
-  const cols = [...APT_COLS, ['star', '', null, (r) => `<button class="star ${watch.has(code, r.key) ? 'on' : ''}" data-key="${esc(r.key)}" title="관심단지">★</button>`]];
+  let watched = new Set();
+  const cols = [...APT_COLS, ['star', '', null, (r) => `<button class="star ${watched.has(r.key) ? 'on' : ''}" data-key="${esc(r.key)}" title="관심단지에 좋아요 (이 브라우저에 저장)">★</button>`]];
   const render = () => {
+    watched = new Set(watch.list().filter((w) => w.code === code).map((w) => w.key));
     const term = q.value.trim();
-    const rows = d.apartments.filter((r) => !term || r.apt.includes(term) || r.dong.includes(term));
+    const rows = d.apartments.filter((r) => !term || A.apartmentNames(code, r.dong, r.apt, r.jibun).some((n) => norm(n).includes(norm(term))) || norm(r.dong).includes(norm(term)));
     thead.innerHTML = tableHead(cols, 'apts', state.sort.apts);
     document.getElementById('aptSort').innerHTML = sortSelect(cols, 'apts', state.sort.apts);
     tbody.innerHTML = sortRows(rows, cols, state.sort.apts).slice(0, 300)
@@ -1207,7 +1327,7 @@ async function viewRegion(code, id) {
     const star = e.target.closest('.star');
     if (star) {
       const a = d.apartments.find((x) => x.key === star.dataset.key);
-      star.classList.toggle('on', watch.toggle({ code, key: a.key, name: a.apt, region: region.name, seen: a.lastDate }));
+      star.classList.toggle('on', watch.toggle({ code, key: a.key, name: a.apt, jibun: a.jibun, region: region.name, seen: a.lastDate }));
       return;
     }
     const tr = e.target.closest('tr[data-href]');
@@ -1220,12 +1340,14 @@ async function viewRegion(code, id) {
 async function viewApt(code, key, id) {
   const region = requireRegion(code);
   const opts = monthOpts(APT_MONTHS);
-  const months = getMonths(`apt.${code}.${key}`, opts, 36);
+  const monthView = `apt.${code}.${key}`;
+  const months = getMonths(monthView, opts, 36);
   showLoading(`<div class="crumb"><a href="#/r/${code}">${esc(region.name)}</a> ›</div>${skeleton('불러오는 중… (처음 보는 기간은 30초 정도 걸릴 수 있어요)')}`);
   const d = await getApt(code, key, months);
   if (isStale(id)) return;
   destroyCharts();
   const { apt } = d;
+  key = apt.key;
   const areaKey = `${code}:${key}`; // 다른 구에 같은 동·단지명이 있을 수 있어 지역 코드까지 포함
   let areaSel = state.aptArea?.[areaKey] || d.areas[0].area;
   if (!d.areas.some((a) => a.area === areaSel)) areaSel = d.areas[0].area;
@@ -1239,7 +1361,7 @@ async function viewApt(code, key, id) {
     <div class="crumb"><a href="#/g/${esc(region.group)}">${esc(region.group)}</a> › <a href="#/r/${code}">${esc(region.name)}</a> ›</div>
     <div class="row">
       <h1>${esc(apt.name)}</h1>
-      <button class="star ${watch.has(code, key) ? 'on' : ''}" id="star" title="관심단지" style="font-size:22px">★</button>
+      <button class="star ${watch.has(code, key) ? 'on' : ''}" id="star" title="관심단지에 좋아요 (이 브라우저에 저장)" style="font-size:22px">★</button>
       <span class="muted">${esc(apt.dong)} ${esc(apt.jibun)} · ${apt.built || '–'}년 준공</span>
       <span class="spacer"></span>${monthsSeg(months, opts)}
     </div>
@@ -1250,9 +1372,9 @@ async function viewApt(code, key, id) {
       <a href="https://rt.molit.go.kr/" target="_blank" rel="noopener" class="copy-name" title="단지명이 복사돼요. 검색창에 붙여넣으세요">국토부 실거래가</a>
       <span class="muted" id="copied" style="font-size:12px"></span>
     </p>
-    <div class="row" style="margin-bottom:16px"><span class="muted">전용면적</span><div class="seg" id="areas">${d.areas.map((a) => `<button data-a="${a.area}" class="${a.area === areaSel ? 'on' : ''}">${a.area}㎡ <span class="muted">(${a.count})</span></button>`).join('')}</div></div>
-    <div id="areaView"></div>`;
-  bindMonths(`apt.${code}.${key}`);
+    <div class="row" style="margin-bottom:16px"><span class="muted">전용면적</span><div class="seg" id="areas">${d.areas.map((a) => `<button data-a="${a.area}" class="${a.area === areaSel ? 'on' : ''}">${a.area}㎡ <span class="muted">(매매 ${a.count}건)</span></button>`).join('')}</div></div>
+    <p class="muted">조회 기간에 매매 또는 전세 거래가 있는 전용면적입니다. 원본 면적을 소수 둘째 자리까지 구분합니다.${A.apartmentNames(code, apt.dong, apt.name, apt.jibun).length > 1 ? ` 원본 명칭: ${esc(A.apartmentNames(code, apt.dong, apt.name, apt.jibun).filter((n) => n !== apt.name).join(', '))}` : ''}</p><div id="areaView"></div>`;
+  bindMonths(monthView);
   app.querySelectorAll('.copy-name').forEach((a) => a.addEventListener('click', () => {
     navigator.clipboard?.writeText(apt.name).then(() => {
       document.getElementById('copied').textContent = `'${apt.name}' 복사됨 — 검색창에 붙여넣으세요`;
@@ -1261,7 +1383,7 @@ async function viewApt(code, key, id) {
   const lastDate = d.trades[d.trades.length - 1].date;
   watch.markSeen(code, key, lastDate); // 단지 화면을 열면 새 거래 표시를 지운다
   document.getElementById('star').addEventListener('click', (e) => {
-    e.target.classList.toggle('on', watch.toggle({ code, key, name: apt.name, region: region.name, seen: lastDate }));
+    e.target.classList.toggle('on', watch.toggle({ code, key, name: apt.name, jibun: apt.jibun, region: region.name, seen: lastDate }));
   });
   document.querySelectorAll('#areas button').forEach((b) => b.addEventListener('click', () => {
     areaSel = b.dataset.a;
@@ -1274,19 +1396,19 @@ async function viewApt(code, key, id) {
     destroyCharts();
     const sel = d.areas.find((a) => a.area === areaSel);
     const ind = sel.indicators;
-    const all = d.trades.filter((t) => String(Math.round(t.area)) === areaSel);
+    const all = d.trades.filter((t) => A.areaKey(t.area) === areaSel);
     const trades = all.filter((t) => !t.bulk);
-    const jeonse = d.rents.filter((t) => String(Math.round(t.area)) === areaSel && t.monthly === 0);
+    const jeonse = d.rents.filter((t) => A.areaKey(t.area) === areaSel && t.monthly === 0);
     const recent = median(trades.slice(-3).map((t) => t.price));
-    const max = trades.reduce((a, b) => (b.price > a.price ? b : a));
+    const max = trades.length ? trades.reduce((a, b) => (b.price > a.price ? b : a)) : null;
     const last = trades[trades.length - 1];
     const jRecent = median(jeonse.slice(-5).map((t) => t.deposit));
 
     document.getElementById('areaView').innerHTML = `
       <div class="kpis">
-        <div class="kpi"><div class="label">최근 시세 (최근 3건 중위)</div><div class="value num">${fmtEok(recent)}</div><div class="hint">마지막 ${last.date.slice(2).replace(/-/g, '.')} · ${last.floor}층 ${fmtEok(last.price)}</div></div>
-        <div class="kpi"><div class="label">기간 내 최고가</div><div class="value num">${fmtEok(max.price)}</div><div class="hint">${max.date.slice(2).replace(/-/g, '.')} · ${max.floor}층</div></div>
-        <div class="kpi"><div class="label">최고가 대비</div><div class="value num">${delta(recent / max.price - 1)}</div><div class="hint">6개월 이동평균 3개월 변화 ${delta(ind.chg3m)}</div></div>
+        <div class="kpi"><div class="label">최근 시세 (최근 3건 중위)</div><div class="value num">${fmtEok(recent)}</div><div class="hint">마지막 ${last ? `${last.date.slice(2).replace(/-/g, '.')} · ${last.floor}층 ${fmtEok(last.price)}` : '해당 기간 매매 거래 없음'}</div></div>
+        <div class="kpi"><div class="label">기간 내 최고가</div><div class="value num">${fmtEok(max?.price)}</div><div class="hint">${max ? `${max.date.slice(2).replace(/-/g, '.')} · ${max.floor}층` : '해당 기간 매매 거래 없음'}</div></div>
+        <div class="kpi"><div class="label">최고가 대비</div><div class="value num">${delta(recent && max ? recent / max.price - 1 : null)}</div><div class="hint">6개월 이동평균 3개월 변화 ${delta(ind.chg3m)}</div></div>
         <div class="kpi"><div class="label">전세 시세</div><div class="value num">${fmtEok(jRecent)}</div><div class="hint">전세가율 ${fmtPct(ind.jeonseRatio, 0)} · 갭 ${jRecent && recent ? fmtEok(recent - jRecent) : '–'}</div></div>
         <div class="kpi"><div class="label">단지 국면</div><div class="value" style="font-size:16px;margin-top:6px">${phaseChip(ind.phase)}</div><div class="hint">거래가 적은 단지는 지역 국면도 함께 보세요</div></div>
       </div>
@@ -1312,10 +1434,10 @@ async function viewApt(code, key, id) {
       </div>
       <div class="grid2">
         <div class="card table-wrap"><h2>최근 매매</h2><table><thead><tr><th class="l">계약일</th><th>층</th><th>거래가</th><th>평당가</th><th class="l">유형</th></tr></thead><tbody>
-          ${all.slice(-25).reverse().map((t) => `<tr${t.bulk ? ' class="muted"' : ''}><td class="l">${t.date.slice(2).replace(/-/g, '.')}</td><td>${t.floor}</td><td>${fmtEok(t.price)}</td><td>${fmtMan(t.price / (t.area / PYEONG))}</td><td class="l muted">${esc(t.kind)}${t.bulk ? ` · <span class="tag" title="같은 날 직거래 ${BULK_HINT}">일괄</span>` : ''}</td></tr>`).join('')}
+          ${all.slice(-25).reverse().map((t) => `<tr${t.bulk ? ' class="muted"' : ''}><td class="l">${t.date.slice(2).replace(/-/g, '.')}</td><td>${t.floor}</td><td>${fmtEok(t.price)}</td><td>${fmtMan(t.price / (t.area / PYEONG))}</td><td class="l muted">${esc(t.kind)}${t.sourceApt && t.sourceApt !== apt.name ? ` · ${esc(t.sourceApt)}` : ''}${t.bulk ? ` · <span class="tag" title="같은 날 직거래 ${BULK_HINT}">일괄</span>` : ''}</td></tr>`).join('')}
         </tbody></table></div>
-        <div class="card table-wrap"><h2>최근 전세</h2><table><thead><tr><th class="l">계약일</th><th>층</th><th>보증금</th></tr></thead><tbody>
-          ${jeonse.slice(-25).reverse().map((t) => `<tr><td class="l">${t.date.slice(2).replace(/-/g, '.')}</td><td>${t.floor}</td><td>${fmtEok(t.deposit)}</td></tr>`).join('') || '<tr><td class="l muted" colspan="3">전세 거래 없음</td></tr>'}
+        <div class="card table-wrap"><h2>최근 전세</h2><table><thead><tr><th class="l">계약일</th><th>층</th><th>보증금</th><th class="l">원본 명칭</th></tr></thead><tbody>
+          ${jeonse.slice(-25).reverse().map((t) => `<tr><td class="l">${t.date.slice(2).replace(/-/g, '.')}</td><td>${t.floor}</td><td>${fmtEok(t.deposit)}</td><td class="l muted">${esc(t.sourceApt || t.apt)}</td></tr>`).join('') || '<tr><td class="l muted" colspan="4">전세 거래 없음</td></tr>'}
         </tbody></table></div>
       </div>`;
 
@@ -1326,6 +1448,12 @@ async function viewApt(code, key, id) {
 
 // ---------- 관심단지 ----------
 async function viewWatch(id) {
+  const saved = watch.list();
+  if (saved.length) {
+    showLoading(skeleton('관심단지를 확인하는 중…'));
+    await Promise.all([...new Set(saved.map((w) => w.code))].map((code) => getRaw(code, 36).catch(() => null)));
+    if (isStale(id)) return;
+  }
   const list = watch.list();
   if (!list.length) {
     app.innerHTML = `<h1>관심단지</h1><div class="card muted">아직 관심단지가 없어요. 지역 화면의 단지 목록이나 단지 화면에서 ★를 눌러 추가하세요.</div>`;
@@ -1349,8 +1477,9 @@ async function viewWatch(id) {
     const el = document.getElementById(`w${i}`);
     try {
       const d = await getApt(w.code, w.key, 36);
+      if (isStale(id)) return;
       const main = d.areas[0];
-      const tr = d.trades.filter((t) => !t.bulk && String(Math.round(t.area)) === main.area);
+      const tr = d.trades.filter((t) => !t.bulk && A.areaKey(t.area) === main.area);
       const recent = median(tr.slice(-3).map((t) => t.price));
       // 새 거래: 지난번 확인한 거래일 이후. 처음 보는 단지(seen 없음)는 지금을 기준으로 삼는다
       const market = d.trades.filter((t) => !t.bulk);
@@ -1358,7 +1487,7 @@ async function viewWatch(id) {
       const fresh = w.seen ? market.filter((t) => t.date > w.seen) : [];
       // 신고가: 같은 평형의 이전(확인 시점까지) 최고가를 넘은 새 거래. 이전 거래가 없는 평형은 세지 않는다
       const high = fresh.filter((t) => {
-        const prior = market.filter((o) => o.date <= w.seen && Math.round(o.area) === Math.round(t.area)).map((o) => o.price);
+        const prior = market.filter((o) => o.date <= w.seen && A.areaKey(o.area) === A.areaKey(t.area)).map((o) => o.price);
         return prior.length && t.price > Math.max(...prior);
       });
       const badges = `${fresh.length ? `<span class="tag new">새 거래 ${fresh.length}건</span>` : ''}${high.length ? `<span class="tag high">신고가 ${high.length}건</span>` : ''}`;
@@ -1369,7 +1498,7 @@ async function viewWatch(id) {
         <div class="row" style="font-size:12px;margin-top:6px">최고가 대비 ${delta(recent / main.maxPrice - 1)} · 전세가율 ${fmtPct(main.indicators.jeonseRatio, 0)}</div>
         <div style="margin-top:6px">${phaseChip(main.indicators.phase)}</div>`;
     } catch (e) {
-      el.querySelector(':scope > .muted').textContent = `오류: ${e.message}`;
+      if (!isStale(id)) el.querySelector(':scope > .muted').textContent = `오류: ${e.message}`;
     }
   }));
   if (isStale(id) || list.length < 2) return;

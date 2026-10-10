@@ -20,6 +20,15 @@ let searchCache = null;
 const routes = [
   [/^\/api\/meta$/, async () => ({ mode: mode(), regions: regions.map(({ demoBase, ...r }) => r) })],
 
+  // 예측은 전 지역의 학습·검증을 마친 빌드 산출물을 공유한다. 요청 중 API 수천 건을 호출하지 않는다.
+  [/^\/api\/forecasts$/, async () => {
+    const file = path.join(__dirname, 'dist', 'data', 'forecasts.json');
+    if (!fs.existsSync(file)) throw notFound('예측 데이터가 없습니다. npm run build로 생성하세요');
+    const data = JSON.parse(fs.readFileSync(file, 'utf8'));
+    if (data.version !== 2 || data.source !== mode() || (data.source === 'live' && data.asOf !== monthRange(2)[0])) throw notFound('현재 데이터에 맞는 예측 빌드가 필요합니다');
+    return data;
+  }],
+
   // 개요 테이블용
   [/^\/api\/overview\/(\d{5})$/, async ([code], q) => {
     if (!regionOf(code)) throw notFound();
@@ -27,6 +36,7 @@ const routes = [
     const months = clampMonths(q.get('months'), 60);
     const [{ yms, rows }, rent] = await Promise.all([getRange('trade', code, months), getRange('rent', code, months)]);
     const { series, indicators } = an.regionSummary(yms, rows, rent.rows);
+    indicators.candidate = an.candidateScore(indicators, series);
     return { code, series: series.slice(-25).map(({ ym, ma, count }) => ({ ym, ma, count })), indicators };
   }],
 
@@ -67,10 +77,11 @@ function notFound(msg = 'not found') {
 
 function serveStatic(res, pathname) {
   // 분석 모듈은 서버와 브라우저가 같은 파일을 쓴다
-  const file = pathname === '/analyze.js'
-    ? path.join(__dirname, 'lib', 'analyze.js')
+  const shared = ['/analyze.js', '/complexes.js'].includes(pathname);
+  const file = shared
+    ? path.join(__dirname, 'lib', path.basename(pathname))
     : path.normalize(path.join(PUBLIC, pathname === '/' ? 'index.html' : pathname));
-  if ((pathname !== '/analyze.js' && !file.startsWith(PUBLIC + path.sep)) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) {
+  if ((!shared && !file.startsWith(PUBLIC + path.sep)) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) {
     res.writeHead(404).end('not found');
     return;
   }
