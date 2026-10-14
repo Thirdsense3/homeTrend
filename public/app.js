@@ -737,12 +737,13 @@ function highlight(text, q) {
 }
 (function bindSearch() {
   const box = document.getElementById('gsearch'), input = document.getElementById('gq'), list = document.getElementById('gsList');
-  let flat = null, items = [], sel = 0, partial = false, failed = false, loading = false;
+  // open: 사용자가 결과창을 열어 둔 상태. 목록 로딩·meta 도착으로 다시 그릴 때 닫은 창을 열지 않게 따로 둔다
+  let flat = null, items = [], sel = 0, partial = false, failed = false, loading = false, open = false;
   const href = (it) => (it.apt ? `#/a/${it.r.code}/${encodeURIComponent(`${it.dong}|${it.apt}`)}` : `#/r/${it.r.code}`);
-  const close = () => { list.hidden = true; };
+  const close = () => { open = false; list.hidden = true; };
   const draw = () => {
     const q = input.value;
-    list.hidden = !q.trim();
+    list.hidden = !open || !q.trim();
     if (list.hidden) return;
     if (!state.meta) { // 첫 화면을 불러오기 전 (모바일에서 흔함)
       items = [];
@@ -767,14 +768,14 @@ function highlight(text, q) {
     getSearch().then((idx) => { flat = searchFlat(idx); partial = !!idx.partial; }, () => { failed = true; })
       .finally(() => { loading = false; draw(); });
   };
-  input.addEventListener('focus', () => { load(); draw(); });
-  input.addEventListener('input', () => { sel = 0; load(); draw(); });
-  document.addEventListener('ht:meta', () => { if (document.activeElement === input || input.value.trim()) { load(); draw(); } });
+  input.addEventListener('focus', () => { open = true; load(); draw(); });
+  input.addEventListener('input', () => { open = true; sel = 0; load(); draw(); });
+  document.addEventListener('ht:meta', () => { if (open) { load(); draw(); } });
   input.addEventListener('keydown', (e) => {
     if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
       e.preventDefault();
       if (items.length) sel = (sel + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
-      draw();
+      open = true; draw();
     } else if (e.key === 'Enter' && items[sel] && !list.hidden) {
       location.hash = href(items[sel]);
       input.value = ''; close(); input.blur();
