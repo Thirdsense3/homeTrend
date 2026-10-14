@@ -642,6 +642,7 @@ async function route() {
       }
       b.className = 'badge' + (live ? '' : ' demo');
       initRegionJump();
+      document.dispatchEvent(new Event('ht:meta')); // 먼저 눌러 둔 검색창이 이어서 목록을 받도록
     }
     const parts = location.hash.replace(/^#\/?/, '').split('/').map(decodeURIComponent);
     const view = parts[0];
@@ -736,13 +737,19 @@ function highlight(text, q) {
 }
 (function bindSearch() {
   const box = document.getElementById('gsearch'), input = document.getElementById('gq'), list = document.getElementById('gsList');
-  let flat = null, items = [], sel = 0, partial = false, failed = false;
+  // open: 사용자가 결과창을 열어 둔 상태. 목록 로딩·meta 도착으로 다시 그릴 때 닫은 창을 열지 않게 따로 둔다
+  let flat = null, items = [], sel = 0, partial = false, failed = false, loading = false, open = false;
   const href = (it) => (it.apt ? `#/a/${it.r.code}/${encodeURIComponent(`${it.dong}|${it.apt}`)}` : `#/r/${it.r.code}`);
-  const close = () => { list.hidden = true; };
+  const close = () => { open = false; list.hidden = true; };
   const draw = () => {
     const q = input.value;
-    list.hidden = !q.trim();
+    list.hidden = !open || !q.trim();
     if (list.hidden) return;
+    if (!state.meta) { // 첫 화면을 불러오기 전 (모바일에서 흔함)
+      items = [];
+      list.innerHTML = '<div class="gs-msg muted">불러오는 중…</div>';
+      return;
+    }
     items = searchMatch(flat || [], q);
     sel = Math.min(sel, Math.max(0, items.length - 1));
     list.innerHTML = (items.length
@@ -754,17 +761,21 @@ function highlight(text, q) {
       + (partial ? '<div class="gs-msg muted">로컬 서버에선 받아 둔 지역의 단지만 검색돼요</div>' : '');
     list.querySelector('.on')?.scrollIntoView({ block: 'nearest' });
   };
-  input.addEventListener('focus', () => {
-    if (!state.meta) return; // 첫 화면을 불러오기 전
-    getSearch().then((idx) => { flat ||= searchFlat(idx); partial = !!idx.partial; draw(); }, () => { failed = true; draw(); });
-    draw();
-  });
-  input.addEventListener('input', () => { sel = 0; draw(); });
+  // 단지 목록 받기. 첫 화면 전이면 meta가 온 뒤(ht:meta) 다시 불린다
+  const load = () => {
+    if (flat || loading || !state.meta) return;
+    loading = true; failed = false;
+    getSearch().then((idx) => { flat = searchFlat(idx); partial = !!idx.partial; }, () => { failed = true; })
+      .finally(() => { loading = false; draw(); });
+  };
+  input.addEventListener('focus', () => { open = true; load(); draw(); });
+  input.addEventListener('input', () => { open = true; sel = 0; load(); draw(); });
+  document.addEventListener('ht:meta', () => { if (open) { load(); draw(); } });
   input.addEventListener('keydown', (e) => {
     if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
       e.preventDefault();
       if (items.length) sel = (sel + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
-      draw();
+      open = true; draw();
     } else if (e.key === 'Enter' && items[sel] && !list.hidden) {
       location.hash = href(items[sel]);
       input.value = ''; close(); input.blur();
