@@ -3,10 +3,12 @@ Transform: AWS::Serverless-2016-10-31
 Description: homeTrend 서버 기반 (거래 이력 S3, DynamoDB, 상태 확인 API, Actions OIDC 역할, 비용 알림)
 
 Parameters:
-  GitHubRepo:
+  GitHubSubjectPrefix:
     Type: String
-    Default: Thirdsense3/homeTrend
-    Description: OIDC 역할을 맡을 수 있는 저장소 (owner/name)
+    Default: repo:Thirdsense3@31949361/homeTrend@1405893312
+    Description: >-
+      OIDC 토큰 sub의 저장소 부분. 이 저장소는 이름 대신 변하지 않는 ID 형식(owner@id/repo@id)을 쓴다.
+      gh api repos/<owner>/<repo>/actions/oidc/customization/sub 의 sub_claim_prefix
   AllowedOrigin:
     Type: String
     Default: https://thirdsense3.github.io
@@ -193,7 +195,7 @@ Resources:
             Condition:
               StringEquals:
                 token.actions.githubusercontent.com:aud: sts.amazonaws.com
-                token.actions.githubusercontent.com:sub: !Sub repo:${GitHubRepo}:ref:refs/heads/main
+                token.actions.githubusercontent.com:sub: !Sub ${GitHubSubjectPrefix}:ref:refs/heads/main
       Policies:
         - PolicyName: history-build
           PolicyDocument:
@@ -227,7 +229,7 @@ Resources:
             Condition:
               StringEquals:
                 token.actions.githubusercontent.com:aud: sts.amazonaws.com
-                token.actions.githubusercontent.com:sub: !Sub repo:${GitHubRepo}:environment:github-pages
+                token.actions.githubusercontent.com:sub: !Sub ${GitHubSubjectPrefix}:environment:github-pages
       Policies:
         - PolicyName: history-confirm
           PolicyDocument:
