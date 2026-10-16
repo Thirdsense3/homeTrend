@@ -105,3 +105,19 @@ test('날짜별 표: 오늘은 빼고, 변화 확인은 새 거래가 있던 기
   assert.equal(d[0].acts.visit, 3);
   assert.deepEqual(d[0].change, { available: 2, opened: 1 });
 });
+
+test('재계산: 결과에서 사라진 기간 안의 집계 행만 지운다', async () => {
+  const m = await load();
+  const from = m.aggFrom(NOW);
+  const rows = [{ pk: 'agg#daily', sk: '2026-10-15' }];
+  const existing = [
+    { pk: 'agg#daily', sk: '2026-10-15' },
+    { pk: 'agg#daily', sk: '2026-10-14' }, // 유일한 기기가 차단돼 결과에서 빠짐
+    { pk: 'agg#activation', sk: '2026-10-10' },
+    { pk: 'agg#daily', sk: '2026-01-01' }, // 재계산 기간 밖은 그대로 보관
+  ];
+  assert.ok('2026-01-01' < from);
+  assert.deepEqual(m.staleRows(existing, rows, NOW), [{ pk: 'agg#daily', sk: '2026-10-14' }, { pk: 'agg#activation', sk: '2026-10-10' }]);
+  // 차단된 기기 1대뿐인 날짜는 결과에 없다
+  assert.deepEqual(m.aggregate([{ pk: `dev#${ID(1)}`, sk: 's', firstSeen: iso(NOW - 3 * m.DAY), flagged: true }, { pk: `dev#${ID(1)}`, sk: 'd#2026-10-14', acts: ['visit'], n: 1 }], NOW), []);
+});

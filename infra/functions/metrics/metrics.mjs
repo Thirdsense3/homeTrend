@@ -92,9 +92,12 @@ const ratio = () => ({ eligible: 0, retained: 0 });
 
 // 매일 집계: 기기 요약(sk s)과 날짜별 요약(sk d#…)으로 기기를 식별할 수 없는 표를 만든다.
 // 관찰 구간이 끝난 기기만 분모에 넣고, 최근 AGG_DAYS일 행을 매번 다시 계산해 덮어쓴다(멱등)
+export const aggFrom = (now) => kstDate(now - AGG_DAYS * DAY);
+export const AGG_TABLES = ['activation', 'retention', 'daily'];
+
 export function aggregate(items, now = Date.now()) {
   const today = kstDate(now);
-  const from = kstDate(now - AGG_DAYS * DAY);
+  const from = aggFrom(now);
   const summaries = new Map();
   const days = [];
   for (const it of items) {
@@ -158,4 +161,11 @@ export function aggregate(items, now = Date.now()) {
   }
   const updatedAt = new Date(now).toISOString();
   return [...rows.values()].map((r) => ({ ...r, v: VERSION, updatedAt }));
+}
+
+// 다시 계산한 기간(aggFrom 이후)에 있던 집계 행 중 이번 결과에 없는 행. 그 날짜의 기기가 모두 차단·삭제된 경우라 지운다
+export function staleRows(existing, rows, now = Date.now()) {
+  const from = aggFrom(now);
+  const keep = new Set(rows.map((r) => `${r.pk}|${r.sk}`));
+  return existing.filter((r) => r.pk.startsWith('agg#') && r.sk >= from && !keep.has(`${r.pk}|${r.sk}`)).map(({ pk, sk }) => ({ pk, sk }));
 }

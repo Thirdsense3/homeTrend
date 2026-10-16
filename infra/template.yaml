@@ -217,7 +217,7 @@ Resources:
       Policies:
         - Statement:
             - Effect: Allow
-              Action: [dynamodb:Scan, dynamodb:PutItem, dynamodb:BatchWriteItem]
+              Action: [dynamodb:Scan, dynamodb:Query, dynamodb:PutItem, dynamodb:DeleteItem, dynamodb:BatchWriteItem]
               Resource: !GetAtt DataTable.Arn
       Events:
         Daily:

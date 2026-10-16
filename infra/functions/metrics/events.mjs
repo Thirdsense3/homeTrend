@@ -49,15 +49,8 @@ async function record({ device, firstVisit, mobile, events }, now) {
   const pk = `dev#${device}`;
   const nowIso = new Date(now).toISOString();
   const date = kstDate(now);
-  const [summary, day] = await Promise.all([
-    db.send(new GetCommand({ TableName: TABLE, Key: { pk, sk: 's' } })).then((r) => r.Item),
-    db.send(new GetCommand({ TableName: TABLE, Key: { pk, sk: `d#${date}` } })).then((r) => r.Item),
-  ]);
+  const summary = (await db.send(new GetCommand({ TableName: TABLE, Key: { pk, sk: 's' } }))).Item;
   if (summary?.flagged) return res(429, { error: 'device' });
-  if ((day?.n || 0) + events.length > DAILY_MAX) {
-    await db.send(new UpdateCommand({ TableName: TABLE, Key: { pk, sk: 's' }, UpdateExpression: 'SET flagged = :t, expiresAt = :exp', ExpressionAttributeValues: { ':t': true, ':exp': ttl(now) } }));
-    return res(429, { error: 'device' });
-  }
 
   let accepted = 0;
   let activatedAt = summary?.activatedAt;
@@ -75,12 +68,14 @@ async function record({ device, firstVisit, mobile, events }, now) {
       await db.send(new TransactWriteCommand({
         TransactItems: [
           // 같은 이벤트 ID는 한 번만 (재전송 중복 제거). 실패하면 나머지도 쓰지 않는다
+          // 하루 상한도 같은 트랜잭션에서 검사해, 동시 요청도 넘지 못하고 중복 재전송은 건수에 들어가지 않는다
           { Put: { TableName: TABLE, Item: { pk, sk: `e#${e.id}`, type: e.type, props: e.props, receivedAt: nowIso, v: VERSION, expiresAt: ttl(now) }, ConditionExpression: 'attribute_not_exists(pk)' } },
           {
             Update: {
               TableName: TABLE, Key: { pk, sk: `d#${date}` },
               UpdateExpression: 'SET mobile = :m, expiresAt = :exp ADD n :one, acts :act',
-              ExpressionAttributeValues: { ':m': mobile, ':exp': ttl(now), ':one': 1, ':act': new Set([e.type]) },
+              ConditionExpression: 'attribute_not_exists(n) OR n < :max',
+              ExpressionAttributeValues: { ':m': mobile, ':exp': ttl(now), ':one': 1, ':act': new Set([e.type]), ':max': DAILY_MAX },
             },
           },
           { Update: { TableName: TABLE, Key: { pk, sk: 's' }, UpdateExpression: `SET ${set.join(', ')}${add.length ? ` ADD ${add.join(', ')}` : ''}`, ExpressionAttributeValues: vals } },
@@ -88,7 +83,13 @@ async function record({ device, firstVisit, mobile, events }, now) {
       }));
       accepted++;
     } catch (err) {
-      if (err.name === 'TransactionCanceledException' && err.CancellationReasons?.[0]?.Code === 'ConditionalCheckFailed') continue;
+      const [dup, full] = err.name === 'TransactionCanceledException' ? err.CancellationReasons.map((r) => r?.Code === 'ConditionalCheckFailed') : [];
+      if (dup) continue;
+      if (full) {
+        // 하루 상한 초과: 이후 요청을 거부하고 집계에서 뺀다
+        await db.send(new UpdateCommand({ TableName: TABLE, Key: { pk, sk: 's' }, UpdateExpression: 'SET flagged = :t, expiresAt = :exp', ExpressionAttributeValues: { ':t': true, ':exp': ttl(now) } }));
+        return res(429, { error: 'device', accepted });
+      }
       throw err;
     }
     // 활성화: 첫 방문 후 24시간 안에 관심단지를 저장하고, 그 뒤 관심단지 요약을 확인

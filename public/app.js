@@ -81,6 +81,8 @@ const metrics = {
   },
 };
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') metrics.flush(); });
+// 첫 방문 판별은 이번 방문에서 관심단지·테마를 저장하기 전, 스크립트를 읽을 때 한 번 확정한다
+metrics.firstVisit();
 const buildId = () => (state.meta?.build ? `${state.meta.build.runNumber}.${state.meta.build.runAttempt}` : undefined);
 
 const dateStr = (n) => { const s = String(n); return `${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}`; };
