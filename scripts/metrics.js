@@ -10,7 +10,13 @@ const args = process.argv.slice(2);
 const htmlAt = args.indexOf('--html');
 const DAYS = Number(args.find((a) => /^\d+$/.test(a))) || 28; // 숫자만 있는 값은 저장 경로로 쓰지 않는다
 const TABLE = process.env.TABLE || 'hometrend';
-const from = new Date(Date.now() + 9 * 3600e3 - DAYS * 86400e3).toISOString().slice(0, 10);
+const kstDate = (ms) => new Date(ms + 9 * 3600e3).toISOString().slice(0, 10);
+const NOW = Date.now();
+const from = kstDate(NOW - DAYS * 86400e3);
+// 매일 05:00 KST 집계가 반영한 마지막 날짜 (전날). 05시 전이면 그 전날
+const through = kstDate(NOW - 5 * 3600e3 - 86400e3);
+// 재방문은 관찰이 이 기간에 끝난 코호트를 본다. 4주 구간(28~34일)이 끝나려면 활성화 후 35일이 지나야 하므로 그만큼 앞에서부터 읽는다
+const retFrom = kstDate(NOW - (DAYS + 35) * 86400e3);
 
 // DynamoDB JSON → 일반 값
 const plain = (v) => {
@@ -23,10 +29,10 @@ const plain = (v) => {
   return x;
 };
 
-function query(table) {
+function query(table, since = from) {
   const r = spawnSync('aws', ['dynamodb', 'query', '--region', 'ap-northeast-2', '--table-name', TABLE,
     '--key-condition-expression', 'pk = :p AND sk >= :f',
-    '--expression-attribute-values', JSON.stringify({ ':p': { S: `agg#${table}` }, ':f': { S: from } }),
+    '--expression-attribute-values', JSON.stringify({ ':p': { S: `agg#${table}` }, ':f': { S: since } }),
     '--output', 'json'], { encoding: 'utf8' });
   if (r.status !== 0) throw new Error(`${table} 읽기 실패: ${r.stderr.trim()}`);
   return JSON.parse(r.stdout).Items.map((it) => Object.fromEntries(Object.entries(it).map(([k, v]) => [k, plain(v)])));
@@ -42,12 +48,12 @@ function renderHtml(data) {
 }
 
 function main() {
-  const daily = query('daily'), activation = query('activation'), retention = query('retention');
+  const daily = query('daily'), activation = query('activation'), retention = query('retention', retFrom);
 
   if (htmlAt >= 0) {
     const out = args[htmlAt + 1] && !args[htmlAt + 1].startsWith('-') && !/^\d+$/.test(args[htmlAt + 1])
       ? path.resolve(args[htmlAt + 1]) : path.join(os.tmpdir(), 'hometrend-metrics.html');
-    fs.writeFileSync(out, renderHtml({ generatedAt: new Date().toISOString(), days: DAYS, from, daily, activation, retention }));
+    fs.writeFileSync(out, renderHtml({ generatedAt: new Date(NOW).toISOString(), days: DAYS, from, through, daily, activation, retention }));
     console.log(`대시보드: ${out}`);
     const opener = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'explorer' : 'xdg-open';
     spawnSync(opener, [out], { stdio: 'ignore' });
@@ -66,7 +72,7 @@ function main() {
     console.log(`  ${r.sk}  ${String(r.devices).padStart(5)}  ${pct(r.activated, r.devices)}  ${pct(r.mobile.activated, r.mobile.devices)}  ${pct(r.desktop.activated, r.desktop.devices)}`);
   }
 
-  console.log('\n핵심 재방문 (활성화 후 7~13일 / 28~34일에 관심단지 변화 확인), 활성화 날짜별');
+  console.log(`\n핵심 재방문 (활성화 후 7~13일 / 28~34일에 관심단지 변화 확인), 활성화 날짜별 (${retFrom}~: 4주 관찰이 끝난 코호트까지)`);
   const segs = ['mobile', 'desktop', 'watch1', 'watch2_3', 'watch4p', 'change', 'nochange'];
   for (const r of retention) {
     console.log(`  ${r.sk}  활성화 ${r.activated}  1주 ${rate(r.all?.w1)}  4주 ${rate(r.all?.w4)}`);
