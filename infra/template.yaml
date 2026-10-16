@@ -149,13 +149,11 @@ Resources:
             - Effect: Allow
               Action: s3:GetObject
               Resource: !Sub ${HistoryBucket.Arn}/confirmed.json
-            # 포인터가 아직 없을 때 403 대신 404(NoSuchKey)를 받기 위해
+            # 포인터가 아직 없을 때 403 대신 404(NoSuchKey)를 받기 위해.
+            # GetObject 요청에는 s3:prefix가 없어 prefix 조건을 걸면 허용이 성립하지 않는다
             - Effect: Allow
               Action: s3:ListBucket
               Resource: !GetAtt HistoryBucket.Arn
-              Condition:
-                StringEquals:
-                  s3:prefix: confirmed.json
       Events:
         Health:
           Type: HttpApi

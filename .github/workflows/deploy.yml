@@ -71,6 +71,14 @@ jobs:
           BUILD_MONTHS: 60
         run: node scripts/build.js
 
+      # 빌드가 1시간(역할 세션 최대 길이)을 넘길 수 있어 저장 직전에 인증을 다시 받는다
+      - name: AWS 인증 갱신 (빌드 역할)
+        if: vars.HISTORY_BUCKET != ''
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_BUILD_ROLE_ARN }}
+          aws-region: ap-northeast-2
+
       # 이 빌드의 스냅샷. 배포가 성공해 확정되기 전까지 다음 빌드는 읽지 않는다
       - name: 이력 저장 (S3)
         if: vars.HISTORY_BUCKET != ''
