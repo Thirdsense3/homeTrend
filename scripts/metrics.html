@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>homeTrend 측정</title>
+<!-- scripts/metrics.js --html 이 아래 DATA 자리에 집계를 넣어 만든다. 지표 정의는 docs/roadmap.md 세부 사항 2 -->
+<style>
+  :root {
+    color-scheme: light;
+    --page: #f9f9f7; --surface: #fcfcfb; --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781;
+    --grid: #e1e0d9; --border: rgba(11, 11, 11, 0.1);
+    --series-1: #2a78d6; --series-2: #eb6834; --warn: #b26a00;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      color-scheme: dark;
+      --page: #0d0d0d; --surface: #1a1a19; --ink: #ffffff; --ink-2: #c3c2b7; --muted: #898781;
+      --grid: #2c2c2a; --border: rgba(255, 255, 255, 0.1);
+      --series-1: #3987e5; --series-2: #d95926; --warn: #e0a040;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--page); color: var(--ink); font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Pretendard", "Segoe UI", sans-serif; }
+  main { max-width: 1200px; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  h2 { font-size: 16px; margin: 0 0 4px; }
+  .muted { color: var(--muted); }
+  .sub { color: var(--ink-2); margin: 0 0 20px; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px 20px; margin-bottom: 16px; min-width: 0; }
+  .note { font-size: 12px; color: var(--muted); margin: 0 0 12px; }
+  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 16px; }
+  .kpi { margin: 0; }
+  .kpi .label { font-size: 13px; color: var(--ink-2); }
+  .kpi .value { font-size: 28px; font-weight: 600; font-variant-numeric: tabular-nums; margin: 4px 0 2px; }
+  .kpi .detail { font-size: 12px; color: var(--muted); }
+  .kpi .small { color: var(--warn); }
+  .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 480px), 1fr)); gap: 16px; }
+  .grid2 .card { margin: 0; }
+  .chart { position: relative; height: 240px; }
+  .legend { display: flex; gap: 14px; font-size: 12px; color: var(--ink-2); margin-bottom: 6px; }
+  .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+  .table-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  th, td { padding: 6px 10px; text-align: right; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  th { font-size: 12px; font-weight: 500; color: var(--muted); }
+  th:first-child, td:first-child { text-align: left; }
+  .empty { padding: 32px 0; text-align: center; color: var(--muted); }
+</style>
+</head>
+<body>
+<main id="app"></main>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script>
+const DATA = /*DATA*/null;
+
+const SMALL = 30; // 분모가 이보다 작으면 '표본 적음'
+const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const pct = (a, b) => (b ? `${((a / b) * 100).toFixed(0)}%` : '–');
+const md = (d) => `${+d.slice(5, 7)}/${+d.slice(8, 10)}`;
+const sum = (xs, f) => xs.reduce((a, x) => a + (f(x) || 0), 0);
+const shift = (d, n) => new Date(Date.parse(`${d}T00:00:00Z`) + n * 86400e3).toISOString().slice(0, 10);
+
+const { daily, activation, retention } = DATA;
+const app = document.getElementById('app');
+
+function kpi(label, a, b, detail) {
+  const value = b === undefined ? a : pct(a, b);
+  const n = b === undefined ? '' : b ? `${a.toLocaleString()} / ${b.toLocaleString()}` : '표본 없음';
+  return `<div class="card kpi"><div class="label">${label}</div><div class="value">${value}</div>
+    <div class="detail">${n}${b !== undefined && b > 0 && b < SMALL ? ' · <span class="small">표본 적음</span>' : ''}</div>
+    <div class="detail">${detail}</div></div>`;
+}
+
+// 하루 방문 기기: 집계 마지막 날까지의 최근 7개 달력 날짜. 방문이 없던 날은 행이 없으므로 0으로 채운다.
+// 측정을 시작한 지 7일이 안 됐으면 시작일(첫 행)부터만 평균 낸다
+const recent = [];
+if (daily.length) {
+  const byDate = new Map(daily.map((d) => [d.sk, d.devices]));
+  for (let d = shift(DATA.through, -6); d <= DATA.through; d = shift(d, 1)) if (d >= daily[0].sk) recent.push(byDate.get(d) || 0);
+}
+// 재방문: 관찰 구간이 이 기간(DATA.from 이후)에 끝난 활성화 코호트. 1주는 활성화 후 14일, 4주는 35일에 끝난다
+const RET_END = { w1: 14, w4: 35 };
+const retRows = (w) => retention.filter((x) => x.sk >= shift(DATA.from, -RET_END[w]));
+const ret = (w, seg = 'all') => ({ r: sum(retRows(w), (x) => x[seg]?.[w]?.retained), e: sum(retRows(w), (x) => x[seg]?.[w]?.eligible) });
+const w1 = ret('w1'), w4 = ret('w4');
+
+app.innerHTML = `
+  <h1>homeTrend 측정</h1>
+  <p class="sub">최근 ${DATA.days}일 (${esc(DATA.from)}~, KST) · ${new Date(DATA.generatedAt).toLocaleString('ko-KR')} 생성 · 매일 05:00에 전날까지 집계</p>
+  <div class="kpis">
+    ${kpi('하루 방문 기기', recent.length ? Math.round(sum(recent, (n) => n) / recent.length).toLocaleString() : '–', undefined, recent.length ? `${md(shift(DATA.through, 1 - recent.length))}~${md(DATA.through)} ${recent.length}일 평균` : '아직 집계 없음')}
+    ${kpi('활성화', sum(activation, (r) => r.activated), sum(activation, (r) => r.devices), '첫 방문 24시간 안에 관심단지 저장 + 요약 확인')}
+    ${kpi('핵심 재방문 (1주)', w1.r, w1.e, '활성화 후 7~13일에 관심단지 변화 확인. 이 기간에 관찰이 끝난 기기')}
+    ${kpi('핵심 재방문 (4주)', w4.r, w4.e, '활성화 후 28~34일. 이 기간에 관찰이 끝난 기기')}
+    ${kpi('변화 확인', sum(daily, (d) => d.change.opened), sum(daily, (d) => d.change.available), '새 거래가 있던 날 상세를 연 기기 (기기·일)')}
+  </div>
+  <div class="grid2">
+    <section class="card"><h2>날짜별 방문 기기</h2><p class="note">하루에 한 번이라도 방문한 기기 수</p>
+      <div class="legend" id="lVisits"><span><i style="background:var(--series-1)"></i>데스크톱</span><span><i style="background:var(--series-2)"></i>모바일</span></div>
+      <div class="chart"><canvas id="cVisits" aria-label="날짜별 방문 기기 막대 차트"></canvas></div></section>
+    <section class="card"><h2>첫 방문일별 활성화율</h2><p class="note">첫 방문 후 24시간이 지난 신규 기기만. 막대에 마우스를 올리면 기기 수</p>
+      <div class="chart"><canvas id="cAct" aria-label="첫 방문일별 활성화율 막대 차트"></canvas></div></section>
+    <section class="card"><h2>활성화일별 1주 재방문율</h2><p class="note">활성화 후 14일이 지나 관찰이 끝난 기기만 (이 기간에 관찰이 끝난 코호트)</p>
+      <div class="chart"><canvas id="cRet" aria-label="활성화일별 1주 재방문율 막대 차트"></canvas></div></section>
+    <section class="card"><h2>재방문 세부</h2><p class="note">이 기간에 관찰이 끝난 코호트 합계. 관심단지 수는 마지막으로 본 값</p>
+      <div class="table-wrap">${segTable()}</div></section>
+  </div>
+  <section class="card" style="margin-top:16px"><h2>날짜별 행동</h2><p class="note">각 행동을 한 기기 수 (같은 기기가 여러 번 해도 1)</p>
+    <div class="table-wrap">${dailyTable()}</div></section>`;
+
+function segTable() {
+  const SEGS = [['all', '전체'], ['mobile', '모바일'], ['desktop', '데스크톱'], ['watch1', '관심단지 1개'], ['watch2_3', '관심단지 2~3개'], ['watch4p', '관심단지 4개+'], ['change', '새 거래 있었음'], ['nochange', '새 거래 없었음']];
+  const cell = (seg, w) => {
+    const { r, e } = ret(w, seg);
+    return e ? `${pct(r, e)} <span class="muted">(${r}/${e})</span>` : '<span class="muted">–</span>';
+  };
+  return `<table><thead><tr><th>구분</th><th>1주</th><th>4주</th></tr></thead><tbody>
+    ${SEGS.map(([k, l]) => `<tr><td>${l}</td><td>${cell(k, 'w1')}</td><td>${cell(k, 'w4')}</td></tr>`).join('')}</tbody></table>`;
+}
+
+function dailyTable() {
+  if (!daily.length) return '<div class="empty">아직 집계된 날짜가 없어요</div>';
+  const COLS = [['visit', '방문'], ['view_watch', '관심단지 확인'], ['watch_add', '관심 추가'], ['watch_remove', '관심 삭제'], ['search', '검색'], ['view_region', '지역 화면'], ['view_apt', '단지 화면'], ['view_privacy', '방침 확인']];
+  return `<table><thead><tr><th>날짜</th><th>기기</th><th>모바일</th>${COLS.map(([, l]) => `<th>${l}</th>`).join('')}<th>변화 확인</th></tr></thead><tbody>
+    ${[...daily].reverse().map((d) => `<tr><td>${d.sk}</td><td>${d.devices}</td><td>${pct(d.mobile, d.devices)}</td>
+      ${COLS.map(([k]) => `<td>${d.acts[k] || 0}</td>`).join('')}<td>${d.change.available ? `${d.change.opened}/${d.change.available}` : '–'}</td></tr>`).join('')}</tbody></table>`;
+}
+
+function empty(id, text) { document.getElementById(id).parentElement.innerHTML = `<div class="empty">${text}</div>`; }
+
+Chart.defaults.font.family = getComputedStyle(document.body).fontFamily;
+Chart.defaults.color = css('--muted');
+Chart.defaults.borderColor = css('--grid');
+const base = (yPct) => ({
+  responsive: true, maintainAspectRatio: false, animation: false,
+  interaction: { mode: 'index', intersect: false },
+  plugins: { legend: { display: false } },
+  scales: {
+    x: { grid: { display: false }, ticks: { maxRotation: 0, autoSkipPadding: 12 } },
+    y: { beginAtZero: true, border: { display: false }, ...(yPct ? { max: 100, ticks: { callback: (v) => `${v}%` } } : { ticks: { precision: 0 } }) },
+  },
+});
+const bar = (color) => ({ backgroundColor: color, borderRadius: { topLeft: 4, topRight: 4 }, borderSkipped: 'bottom', borderWidth: { top: 2 }, borderColor: css('--surface'), maxBarThickness: 28 });
+
+if (daily.length) {
+  new Chart(document.getElementById('cVisits'), {
+    type: 'bar',
+    data: { labels: daily.map((d) => md(d.sk)), datasets: [
+      { label: '데스크톱', data: daily.map((d) => d.devices - d.mobile), ...bar(css('--series-1')), stack: 's' },
+      { label: '모바일', data: daily.map((d) => d.mobile), ...bar(css('--series-2')), stack: 's' },
+    ] },
+    options: { ...base(false), scales: { ...base(false).scales, x: { ...base(false).scales.x, stacked: true }, y: { ...base(false).scales.y, stacked: true } },
+      plugins: { legend: { display: false }, tooltip: { callbacks: { footer: (items) => `합계 ${items.reduce((a, i) => a + i.raw, 0)}대` } } } },
+  });
+} else {
+  document.getElementById('lVisits').remove();
+  empty('cVisits', '아직 집계된 날짜가 없어요');
+}
+
+function rateChart(id, rows, getR, getE, noun) {
+  rows = rows.filter((r) => getE(r) > 0);
+  if (!rows.length) return empty(id, '관찰이 끝난 기기가 아직 없어요');
+  new Chart(document.getElementById(id), {
+    type: 'bar',
+    data: { labels: rows.map((r) => md(r.sk)), datasets: [{ label: noun, data: rows.map((r) => (getR(r) / getE(r)) * 100), ...bar(css('--series-1')) }] },
+    options: { ...base(true), plugins: { legend: { display: false }, tooltip: { callbacks: {
+      label: (c) => ` ${noun} ${c.raw.toFixed(0)}% (${getR(rows[c.dataIndex])}/${getE(rows[c.dataIndex])}대)`,
+    } } } },
+  });
+}
+rateChart('cAct', activation, (r) => r.activated, (r) => r.devices, '활성화');
+rateChart('cRet', retRows('w1'), (r) => r.all?.w1?.retained || 0, (r) => r.all?.w1?.eligible || 0, '1주 재방문');
+</script>
+</body>
+</html>
