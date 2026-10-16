@@ -1,0 +1,295 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: homeTrend 서버 기반 (거래 이력 S3, DynamoDB, 상태 확인 API, Actions OIDC 역할, 비용 알림)
+
+Parameters:
+  GitHubRepo:
+    Type: String
+    Default: Thirdsense3/homeTrend
+    Description: OIDC 역할을 맡을 수 있는 저장소 (owner/name)
+  AllowedOrigin:
+    Type: String
+    Default: https://thirdsense3.github.io
+    Description: API CORS 허용 출처 (GitHub Pages)
+  GitHubOidcProviderArn:
+    Type: String
+    Default: ''
+    Description: 계정에 GitHub OIDC 공급자가 이미 있으면 그 ARN. 비우면 새로 만든다
+  BudgetEmail:
+    Type: String
+    Description: 비용 알림을 받을 이메일
+  BudgetLimitUsd:
+    Type: Number
+    Default: 20
+    Description: 월 비용 알림 기준 (USD, 계정 전체)
+
+Conditions:
+  CreateOidcProvider: !Equals [!Ref GitHubOidcProviderArn, '']
+
+Globals:
+  Function:
+    Runtime: nodejs24.x
+    Architectures: [arm64]
+    MemorySize: 256
+    Timeout: 10
+
+Resources:
+  # 거래 이력·변화 파일. 경로 규칙은 lib/history.js
+  HistoryBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub hometrend-history-${AWS::AccountId}
+      VersioningConfiguration:
+        Status: Enabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      LifecycleConfiguration:
+        Rules:
+          # 빌드별 스냅샷: 확정본은 history/로 복사되므로 30일 뒤 삭제
+          - Id: expire-build-snapshots
+            Status: Enabled
+            Prefix: builds/
+            ExpirationInDays: 30
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 1
+          # 장기 보관본: 잘못 쓴 이력을 되돌릴 수 있게 최근 10개 이전 버전은 남기고, 그보다 오래된 건 30일 뒤 삭제
+          - Id: expire-old-history-versions
+            Status: Enabled
+            Prefix: history/
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 30
+              NewerNoncurrentVersions: 10
+          - Id: expire-old-pointer-versions
+            Status: Enabled
+            Prefix: confirmed
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 90
+          - Id: cleanup
+            Status: Enabled
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 1
+            ExpiredObjectDeleteMarker: true
+
+  HistoryBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref HistoryBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: '*'
+            Action: s3:*
+            Resource:
+              - !GetAtt HistoryBucket.Arn
+              - !Sub ${HistoryBucket.Arn}/*
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
+
+  # 동기화 목록·알림 구독·측정 집계 (단일 테이블, 2번 작업부터 사용)
+  DataTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: hometrend
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      TimeToLiveSpecification:
+        AttributeName: expiresAt
+        Enabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+
+  Api:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      CorsConfiguration:
+        AllowOrigins: [!Ref AllowedOrigin]
+        AllowMethods: [GET, POST, PUT, DELETE]
+        AllowHeaders: [content-type]
+        MaxAge: 600
+      DefaultRouteSettings:
+        ThrottlingBurstLimit: 20
+        ThrottlingRateLimit: 10
+
+  HealthFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: functions/health/
+      Handler: index.handler
+      Environment:
+        Variables:
+          HISTORY_BUCKET: !Ref HistoryBucket
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: s3:GetObject
+              Resource: !Sub ${HistoryBucket.Arn}/confirmed.json
+            # 포인터가 아직 없을 때 403 대신 404(NoSuchKey)를 받기 위해
+            - Effect: Allow
+              Action: s3:ListBucket
+              Resource: !GetAtt HistoryBucket.Arn
+              Condition:
+                StringEquals:
+                  s3:prefix: confirmed.json
+      Events:
+        Health:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref Api
+            Path: /health
+            Method: GET
+
+  HealthLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${HealthFunction}
+      RetentionInDays: 30
+
+  GitHubOidcProvider:
+    Type: AWS::IAM::OIDCProvider
+    Condition: CreateOidcProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList: [sts.amazonaws.com]
+      ThumbprintList:
+        - 6938fd4d98bab03faadb97b34396831e3780aea1
+        - 1c58a3a8518e8759bf075b76b750d4f2df264fcd
+
+  # build job (main 브랜치): 확정된 이력을 읽고, 이 빌드의 스냅샷만 쓴다
+  BuildRole:
+    Type: AWS::IAM::Role
+    Properties:
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !If [CreateOidcProvider, !Ref GitHubOidcProvider, !Ref GitHubOidcProviderArn]
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                token.actions.githubusercontent.com:sub: !Sub repo:${GitHubRepo}:ref:refs/heads/main
+      Policies:
+        - PolicyName: history-build
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: s3:GetObject
+                Resource:
+                  - !Sub ${HistoryBucket.Arn}/confirmed.json
+                  - !Sub ${HistoryBucket.Arn}/builds/*
+                  - !Sub ${HistoryBucket.Arn}/history/*
+              - Effect: Allow
+                Action: s3:PutObject
+                Resource: !Sub ${HistoryBucket.Arn}/builds/*
+              - Effect: Allow
+                Action: s3:ListBucket
+                Resource: !GetAtt HistoryBucket.Arn
+
+  # deploy job (github-pages 환경): 배포 전 확인과 확정
+  DeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !If [CreateOidcProvider, !Ref GitHubOidcProvider, !Ref GitHubOidcProviderArn]
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                token.actions.githubusercontent.com:sub: !Sub repo:${GitHubRepo}:environment:github-pages
+      Policies:
+        - PolicyName: history-confirm
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: s3:GetObject
+                Resource:
+                  - !Sub ${HistoryBucket.Arn}/confirmed.json
+                  - !Sub ${HistoryBucket.Arn}/builds/*
+              - Effect: Allow
+                Action: s3:PutObject
+                Resource:
+                  - !Sub ${HistoryBucket.Arn}/confirmed.json
+                  - !Sub ${HistoryBucket.Arn}/confirmed/*
+                  - !Sub ${HistoryBucket.Arn}/history/*
+              - Effect: Allow
+                Action: s3:ListBucket
+                Resource: !GetAtt HistoryBucket.Arn
+
+  # 계정 전체 월 비용. 실제 80% 도달, 예상 100% 초과 때 메일
+  MonthlyBudget:
+    Type: AWS::Budgets::Budget
+    Properties:
+      Budget:
+        BudgetName: hometrend-monthly
+        BudgetType: COST
+        TimeUnit: MONTHLY
+        BudgetLimit:
+          Amount: !Ref BudgetLimitUsd
+          Unit: USD
+      NotificationsWithSubscribers:
+        - Notification:
+            NotificationType: ACTUAL
+            ComparisonOperator: GREATER_THAN
+            Threshold: 80
+            ThresholdType: PERCENTAGE
+          Subscribers:
+            - SubscriptionType: EMAIL
+              Address: !Ref BudgetEmail
+        - Notification:
+            NotificationType: FORECASTED
+            ComparisonOperator: GREATER_THAN
+            Threshold: 100
+            ThresholdType: PERCENTAGE
+          Subscribers:
+            - SubscriptionType: EMAIL
+              Address: !Ref BudgetEmail
+
+Outputs:
+  ApiUrl:
+    Value: !Sub https://${Api}.execute-api.${AWS::Region}.amazonaws.com
+  HistoryBucketName:
+    Description: 저장소 변수 HISTORY_BUCKET
+    Value: !Ref HistoryBucket
+  BuildRoleArn:
+    Description: 저장소 변수 AWS_BUILD_ROLE_ARN
+    Value: !GetAtt BuildRole.Arn
+  DeployRoleArn:
+    Description: 저장소 변수 AWS_DEPLOY_ROLE_ARN
+    Value: !GetAtt DeployRole.Arn
+  TableName:
+    Value: !Ref DataTable

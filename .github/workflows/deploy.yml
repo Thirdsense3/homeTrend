@@ -27,7 +27,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
 
       - name: API 키 확인
         env:
@@ -38,8 +38,25 @@ jobs:
             exit 1
           fi
 
-      # 지난 실행에서 받은 실거래 데이터 재사용 (지난 달들은 바뀌지 않음)
+      # 거래 이력(원본 캐시)은 S3에 보관한다 (infra/README.md). 저장소 변수 HISTORY_BUCKET이 없으면 예전처럼 Actions 캐시만 사용
+      - name: AWS 인증 (빌드 역할)
+        if: vars.HISTORY_BUCKET != ''
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_BUILD_ROLE_ARN }}
+          aws-region: ap-northeast-2
+
+      # 마지막 확정 빌드의 이력 복원. 읽지 못하면 빌드를 멈춰 이력을 새로 만들거나 덮어쓰지 않는다
+      - name: 이력 복원 (S3)
+        id: history
+        if: vars.HISTORY_BUCKET != ''
+        env:
+          HISTORY_BUCKET: ${{ vars.HISTORY_BUCKET }}
+        run: node scripts/history.js restore
+
+      # S3를 쓰지 않거나, S3에 확정된 이력이 아직 없을 때(첫 이전) 지난 실행의 Actions 캐시에서 시작
       - name: 데이터 캐시 복원
+        if: vars.HISTORY_BUCKET == '' || steps.history.outputs.bootstrap == 'true'
         uses: actions/cache/restore@v4
         with:
           path: data/cache
@@ -54,9 +71,16 @@ jobs:
           BUILD_MONTHS: 60
         run: node scripts/build.js
 
+      # 이 빌드의 스냅샷. 배포가 성공해 확정되기 전까지 다음 빌드는 읽지 않는다
+      - name: 이력 저장 (S3)
+        if: vars.HISTORY_BUCKET != ''
+        env:
+          HISTORY_BUCKET: ${{ vars.HISTORY_BUCKET }}
+        run: node scripts/history.js save --meta dist/data/meta.json
+
       # 빌드가 실패해도(일일 호출 한도 등) 받은 만큼은 저장 → 다음 실행에서 이어 받음
       - name: 데이터 캐시 저장
-        if: always()
+        if: always() && vars.HISTORY_BUCKET == ''
         continue-on-error: true
         uses: actions/cache/save@v4
         with:
@@ -74,5 +98,50 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
+      # 확정 단계는 배포 아티팩트에 기록된 빌드 순번을 그대로 쓴다 (배포 job만 재실행해도 같은 순번·같은 내용)
+      - uses: actions/checkout@v4
+        if: vars.HISTORY_BUCKET != ''
+        with:
+          sparse-checkout: |
+            lib/history.js
+            scripts/history.js
+          sparse-checkout-cone-mode: false
+
+      - uses: actions/setup-node@v4
+        if: vars.HISTORY_BUCKET != ''
+        with:
+          node-version: 24
+
+      - name: 배포 아티팩트의 빌드 정보
+        if: vars.HISTORY_BUCKET != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: github-pages
+          path: ${{ runner.temp }}/pages
+
+      - name: AWS 인증 (배포 역할)
+        if: vars.HISTORY_BUCKET != ''
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ap-northeast-2
+
+      # 더 최신 빌드가 이미 확정돼 있거나 포인터를 읽지 못하면 실패 → Pages·S3 모두 기존 최신 버전 유지
+      - name: 배포 전 확인
+        if: vars.HISTORY_BUCKET != ''
+        env:
+          HISTORY_BUCKET: ${{ vars.HISTORY_BUCKET }}
+          PAGES: ${{ runner.temp }}/pages
+        run: |
+          tar -xf "$PAGES/artifact.tar" -C "$PAGES" ./data/meta.json
+          node scripts/history.js check --meta "$PAGES/data/meta.json"
+
       - id: deployment
         uses: actions/deploy-pages@v4
+
+      # Pages 배포가 성공한 빌드만 확정: 포인터를 조건부로 올리고 확정 마커를 쓴다
+      - name: 배포 확정
+        if: vars.HISTORY_BUCKET != ''
+        env:
+          HISTORY_BUCKET: ${{ vars.HISTORY_BUCKET }}
+        run: node scripts/history.js confirm --meta "${{ runner.temp }}/pages/data/meta.json"
