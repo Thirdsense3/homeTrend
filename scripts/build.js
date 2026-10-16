@@ -69,6 +69,10 @@ function write(rel, data) {
     mode: 'static',
     source: mode(),
     builtAt: new Date().toISOString(),
+    // 빌드 순번 (GitHub Actions 실행 번호, 재시도 번호). 배포 확정 단계가 이 값을 그대로 쓴다 (lib/history.js)
+    build: process.env.GITHUB_RUN_NUMBER
+      ? { runNumber: Number(process.env.GITHUB_RUN_NUMBER), runAttempt: Number(process.env.GITHUB_RUN_ATTEMPT) || 1 }
+      : null,
     months: MONTHS,
     yms,
     regions: regions.map(({ demoBase, ...r }) => r),

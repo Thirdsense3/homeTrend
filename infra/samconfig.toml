@@ -1,0 +1,11 @@
+version = 0.1
+
+[default.global.parameters]
+stack_name = "hometrend"
+
+[default.deploy.parameters]
+region = "ap-northeast-2"
+capabilities = "CAPABILITY_IAM"
+resolve_s3 = true
+confirm_changeset = true
+# BudgetEmail은 저장소에 두지 않는다: sam deploy --parameter-overrides BudgetEmail=<메일>

@@ -130,6 +130,8 @@ node scripts/evaluate-candidates.js dist/data 60
 - `lib/pack.js` — 브라우저로 보내는 지역 원본 데이터 압축 포맷
 - `server.js` — 로컬 서버 (`/api/*`)
 - `scripts/build.js` — 정적 사이트 빌드 (`dist/`)
+- `lib/history.js` · `scripts/history.js` — 거래 이력 S3 보관과 배포 확정 (빌드 순번 비교·조건부 포인터 갱신)
+- `infra/` — AWS 스택 (SAM): 이력 버킷, DynamoDB, 상태 확인 API, Actions OIDC 역할, 비용 알림
 - `data/regions.json` — 지역 목록 (코드 추가·수정 가능)
 
 ### 배포 (GitHub Pages)
@@ -139,7 +141,7 @@ node scripts/evaluate-candidates.js dist/data 60
 
 - 저장소 Secrets에 `MOLIT_API_KEY`가 필요해요: `grep '^MOLIT_API_KEY=' .env | cut -d= -f2- | gh secret set MOLIT_API_KEY`
 - 선택: `ECOS_API_KEY`, `REB_API_KEY` (`gh secret set ECOS_API_KEY` 등). 없거나 실패해도 실거래 배포는 그대로 진행돼요
-- 받은 원본 데이터는 Actions 캐시에 보관해서 매일 최근 자료만 다시 받아요
+- 받은 원본 데이터(거래 이력)는 S3에 보관해서 매일 최근 자료만 다시 받아요. Pages 배포가 성공한 빌드만 확정해 다음 빌드가 이어 받아요. 설정은 [infra/README.md](infra/README.md), 저장소 변수 `HISTORY_BUCKET`이 없으면 예전처럼 Actions 캐시를 써요
 - 첫 실행은 5년치 전체라 1~2시간 걸려요. 일일 호출 한도에 걸리면 다음 날 이어 받고, 실패가 5%를 넘으면 이전 사이트를 그대로 둬요
 
 로컬에서 정적 빌드만 확인: `BUILD_MONTHS=36 npm run build` → `dist/`
