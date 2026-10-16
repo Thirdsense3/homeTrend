@@ -9,6 +9,7 @@
 
 - 매일 새벽 4시(한국 시간)에 새 자료로 자동 갱신돼요.
 - 회원가입이나 로그인이 없고, 관심 지역·단지·테마 설정은 내 브라우저에만 저장돼요.
+- 사이트 개선을 위해 무작위 기기 ID로 방문·화면 종류 같은 행동만 직접 측정해요. 검색어·관심 목록은 보내지 않고, 사이트의 [개인정보처리방침](https://thirdsense3.github.io/homeTrend/#/privacy)에서 측정을 끄거나 기록을 지울 수 있어요.
 
 > **꼭 알아두세요.** 실거래 지표·국면 판단과 실험적인 단기 예측은 참고 정보예요. 예측도 투자 권유나 조언이 아니고, 오차 참고 범위가 앞으로의 실제 포함 확률을 보장하지 않아요. 실제 거래 전에는 매물 시세와 공식 자료를 꼭 따로 확인하세요.
 
@@ -131,7 +132,8 @@ node scripts/evaluate-candidates.js dist/data 60
 - `server.js` — 로컬 서버 (`/api/*`)
 - `scripts/build.js` — 정적 사이트 빌드 (`dist/`)
 - `lib/history.js` · `scripts/history.js` — 거래 이력 S3 보관과 배포 확정 (빌드 순번 비교·조건부 포인터 갱신)
-- `infra/` — AWS 스택 (SAM): 이력 버킷, DynamoDB, 상태 확인 API, Actions OIDC 역할, 비용 알림
+- `infra/` — AWS 스택 (SAM): 이력 버킷, DynamoDB, 상태 확인·방문 측정 API, Actions OIDC 역할, 비용 알림
+- `infra/functions/metrics/` · `scripts/metrics.js` — 방문 측정 규칙(이벤트 허용 목록·활성화·재방문 집계)과 집계 보기
 - `data/regions.json` — 지역 목록 (코드 추가·수정 가능)
 
 ### 배포 (GitHub Pages)

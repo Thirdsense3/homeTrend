@@ -317,3 +317,12 @@ summary { cursor: pointer; }
 #areas { flex-wrap: wrap; }
 #areas button { flex: 0 0 auto; white-space: nowrap; }
 #regionJump, .region-filter button { font: inherit; color: var(--ink); background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; }
+
+/* 개인정보처리방침 */
+.prose { max-width: 760px; line-height: 1.7; }
+.prose h2 { margin: 24px 0 8px; }
+.prose ul { padding-left: 20px; margin: 0 0 8px; }
+.prose li + li { margin-top: 4px; }
+.btn { font: inherit; font-size: 14px; color: var(--ink); background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 6px 12px; cursor: pointer; }
+.btn:hover { background: var(--accent-wash); }
+.btn:disabled { opacity: 0.5; cursor: default; }
