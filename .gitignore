@@ -7,3 +7,4 @@ data/cache/
 !public/index.html
 dist/
 .claude/worktrees/
+infra/.aws-sam/

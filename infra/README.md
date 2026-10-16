@@ -38,8 +38,11 @@
 집계 보기 (기준선: `API_URL`을 넣은 뒤 2주):
 
 ```bash
-node scripts/metrics.js 28   # 날짜별 방문·행동, 첫 방문일별 활성화, 활성화일별 1주·4주 재방문
+node scripts/metrics.js 28          # 터미널 표: 날짜별 방문·행동, 첫 방문일별 활성화, 활성화일별 1주·4주 재방문
+node scripts/metrics.js 28 --html   # 같은 집계를 차트 대시보드로 브라우저에서 연다 (임시 폴더에 저장, 경로를 주면 거기에)
 ```
+
+대시보드(`scripts/metrics.html`)는 이 컴퓨터의 AWS 자격 증명으로 집계를 읽어 만든 파일이라 어디에도 공개되지 않는다. 분모가 30 미만인 비율에는 '표본 적음'을 표시한다.
 
 집계는 매일 최근 60일을 다시 계산해 덮어쓴다. 바로 다시 만들려면 `aws lambda invoke --function-name <MetricsAggregateFunction 이름> /dev/stdout`.
 
