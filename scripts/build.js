@@ -73,6 +73,8 @@ function write(rel, data) {
     build: process.env.GITHUB_RUN_NUMBER
       ? { runNumber: Number(process.env.GITHUB_RUN_NUMBER), runAttempt: Number(process.env.GITHUB_RUN_ATTEMPT) || 1 }
       : null,
+    // 방문 측정 API (infra/, 저장소 변수 API_URL). 없으면 사이트가 아무것도 보내지 않는다
+    api: /^https:\/\/[^\s"']+$/.test(process.env.API_URL || '') ? process.env.API_URL.replace(/\/+$/, '') : null,
     months: MONTHS,
     yms,
     regions: regions.map(({ demoBase, ...r }) => r),

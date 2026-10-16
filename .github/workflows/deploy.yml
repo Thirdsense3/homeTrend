@@ -69,6 +69,7 @@ jobs:
           ECOS_API_KEY: ${{ secrets.ECOS_API_KEY }} # 선택: 없으면 금리·심리 지표만 빠짐
           REB_API_KEY: ${{ secrets.REB_API_KEY }} # 선택: 없으면 부동산원 주간지수·매입자 거주지만 빠짐
           BUILD_MONTHS: 60
+          API_URL: ${{ vars.API_URL }} # 선택: 방문 측정 API (infra/README.md). 없으면 측정하지 않음
         run: node scripts/build.js
 
       # 빌드가 1시간(역할 세션 최대 길이)을 넘길 수 있어 저장 직전에 인증을 다시 받는다

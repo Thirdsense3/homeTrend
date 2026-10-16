@@ -23,6 +23,68 @@ const getReb = () => (state.rebPromise ||= api(STATIC ? 'data/reb.json' : '/api/
 const rebInd = (code) => state.reb?.regions?.[code]?.ind;
 const getForecasts = () => (state.forecastPromise ||= api(STATIC ? 'data/forecasts.json' : '/api/forecasts').then((d) => (state.forecasts = d)).catch(() => (state.forecasts = { status: 'unavailable', regions: {}, validation: {} })));
 
+// ---------- 방문 측정 (개인정보처리방침 #/privacy, 규칙은 infra/functions/metrics/metrics.mjs) ----------
+// 무작위 기기 ID와 행동 종류만 보낸다. 검색어·단지 이름·관심 목록은 보내지 않는다. API 주소(meta.api)가 없으면 아무것도 보내지 않는다
+const metrics = {
+  queue: [], timer: 0,
+  get(k) { try { return localStorage.getItem(k); } catch (_) { return null; } },
+  set(k, v) { try { if (v == null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch (_) { /* 저장 불가 */ } },
+  available: () => !!state.meta?.api && !!window.crypto?.randomUUID,
+  off() { return this.get('homeTrend.metricsOff') === '1'; },
+  setOff(off) { this.set('homeTrend.metricsOff', off ? '1' : null); if (off) this.queue = []; },
+  device() {
+    let d = this.get('homeTrend.device');
+    if (!/^[0-9a-f-]{36}$/.test(d || '')) {
+      d = crypto.randomUUID();
+      this.set('homeTrend.device', d);
+      if (this.get('homeTrend.device') !== d) return null; // 저장할 수 없는 브라우저는 매번 새 기기가 되므로 보내지 않는다
+    }
+    return d;
+  },
+  // 첫 방문 시각. 기기 기록이 서버에서 지워진 뒤 돌아와도 신규로 세지 않게 브라우저에 둔다.
+  // 측정 전부터 관심단지·좋아요·테마를 저장해 둔 브라우저는 기존 사용자로 표시한다
+  firstVisit() {
+    let fv = this.get('homeTrend.firstVisit');
+    if (!fv) {
+      const old = ['homeTrend.watch', 'homeTrend.regionLikes', 'homeTrend.theme'].some((k) => this.get(k) != null);
+      fv = old ? '2020-01-01T00:00:00.000Z' : new Date().toISOString();
+      this.set('homeTrend.firstVisit', fv);
+    }
+    return fv;
+  },
+  track(type, p) {
+    if (!this.available() || this.off()) return;
+    this.queue.push({ id: crypto.randomUUID(), type, ...(p && { p }) });
+    clearTimeout(this.timer);
+    this.timer = setTimeout(() => this.flush(), 2000);
+  },
+  flush() {
+    clearTimeout(this.timer);
+    if (!this.queue.length || !this.available() || this.off()) return;
+    const d = this.device();
+    if (!d) { this.queue = []; return; }
+    const fv = this.firstVisit(), m = matchMedia('(pointer: coarse)').matches ? 1 : 0;
+    // text/plain 본문이라 사전 요청(CORS preflight) 없이 보낸다. 실패해도 화면에는 영향 없음
+    while (this.queue.length) {
+      fetch(`${state.meta.api}/events`, { method: 'POST', body: JSON.stringify({ d, fv, m, e: this.queue.splice(0, 30) }), keepalive: true }).catch(() => {});
+    }
+  },
+  // 이 기기 기록 삭제: 서버 기록을 지우고 기기 ID를 새로 만든다
+  async remove() {
+    this.queue = [];
+    const d = this.get('homeTrend.device');
+    if (d) {
+      const r = await fetch(`${state.meta.api}/devices/${d}`, { method: 'DELETE' });
+      if (!r.ok) throw new Error(r.statusText || String(r.status));
+    }
+    this.set('homeTrend.device', null);
+  },
+};
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') metrics.flush(); });
+// 첫 방문 판별은 이번 방문에서 관심단지·테마를 저장하기 전, 스크립트를 읽을 때 한 번 확정한다
+metrics.firstVisit();
+const buildId = () => (state.meta?.build ? `${state.meta.build.runNumber}.${state.meta.build.runAttempt}` : undefined);
+
 const dateStr = (n) => { const s = String(n); return `${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}`; };
 function unpack(p, months, code) {
   const yms = p.yms.slice(-months);
@@ -153,7 +215,9 @@ const watch = {
     let l = this.list();
     l = this.has(item.code, item.key) ? l.filter((w) => !(w.code === item.code && w.key === item.key)) : [...l, item];
     this.save(l);
-    return this.has(item.code, item.key);
+    const on = this.has(item.code, item.key);
+    metrics.track(on ? 'watch_add' : 'watch_remove', { n: this.list().length });
+    return on;
   },
   markSeen(code, key, date) {
     key = A.canonicalKey(code, key, state.complexes?.[code]);
@@ -643,16 +707,21 @@ async function route() {
       b.className = 'badge' + (live ? '' : ' demo');
       initRegionJump();
       document.dispatchEvent(new Event('ht:meta')); // 먼저 눌러 둔 검색창이 이어서 목록을 받도록
+      metrics.track('visit');
     }
     const parts = location.hash.replace(/^#\/?/, '').split('/').map(decodeURIComponent);
     const view = parts[0];
     const tab = view === 'r' || view === 'a' ? regionOf(parts[1])?.group
       : view === 'watch' ? 'watch'
+      : view === 'privacy' ? null
       : view === 'g' && parts[1] ? parts[1] : '서울';
     document.querySelectorAll('#tabs a').forEach((a) => a.classList.toggle('on', a.dataset.tab === tab));
+    // 화면 종류만 기록 (기간·테마를 바꿔 다시 그려도 같은 화면으로 센다. 집계는 기기 수 기준)
+    if (!state.keepView) metrics.track(view === 'r' ? 'view_region' : view === 'a' ? 'view_apt' : view === 'watch' ? 'view_watch' : view === 'privacy' ? 'view_privacy' : 'view_overview', view === 'watch' ? { n: watch.list().length } : undefined);
     if (view === 'r') await viewRegion(parts[1], id);
     else if (view === 'a') await viewApt(parts[1], parts.slice(2).join('/'), id);
     else if (view === 'watch') await viewWatch(id);
+    else if (view === 'privacy') viewPrivacy();
     else await viewOverview(tab, id);
   } catch (e) {
     if (!isStale(id)) app.innerHTML = `<div class="card err">불러오지 못했습니다: ${esc(e.message)}</div>`;
@@ -777,11 +846,17 @@ function highlight(text, q) {
       if (items.length) sel = (sel + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
       open = true; draw();
     } else if (e.key === 'Enter' && items[sel] && !list.hidden) {
+      metrics.track('search', { k: items[sel].apt ? 'apt' : 'region' });
       location.hash = href(items[sel]);
       input.value = ''; close(); input.blur();
     } else if (e.key === 'Escape') { close(); input.blur(); }
   });
-  list.addEventListener('click', (e) => { if (e.target.closest('a')) { input.value = ''; close(); } });
+  list.addEventListener('click', (e) => {
+    const a = e.target.closest('a');
+    if (!a) return;
+    metrics.track('search', { k: items[a.dataset.i]?.apt ? 'apt' : 'region' });
+    input.value = ''; close();
+  });
   document.addEventListener('click', (e) => { if (!box.contains(e.target)) close(); });
   // '/' 키로 검색창으로
   document.addEventListener('keydown', (e) => {
@@ -1539,6 +1614,80 @@ async function viewApt(code, key, id) {
   renderArea();
 }
 
+// ---------- 개인정보처리방침 ----------
+const PRIVACY_UPDATED = '2026-10-16';
+function viewPrivacy() {
+  const on = metrics.available();
+  app.innerHTML = `<article class="card prose">
+    <h1>개인정보처리방침</h1>
+    <p class="muted">시행일 ${PRIVACY_UPDATED}</p>
+    <p>homeTrend는 회원가입·로그인 없이 쓰는 사이트예요. 이름·전화번호·이메일을 받지 않고, 쿠키나 외부 분석 도구(구글 애널리틱스 등)를 쓰지 않아요.
+    사이트를 더 쓸모 있게 고치려고, 어떤 화면이 쓰이고 다시 찾아오는지를 아래 범위에서만 직접 측정해요.</p>
+
+    <h2>브라우저에만 저장하는 것</h2>
+    <ul>
+      <li>관심단지(★), 좋아요한 지역(♥), 테마, 화면 설정 — 서버로 보내지 않아요.</li>
+      <li>무작위 기기 ID와 첫 방문 시각 — 측정에 써요(아래).</li>
+    </ul>
+
+    <h2>측정을 위해 보내는 것</h2>
+    <ul>
+      <li><b>무작위 기기 ID</b>: 이 브라우저에서 처음 만든 임의의 값이에요. 사람이나 기기 정보와 연결되지 않고, 다른 브라우저·기기와 공유되지 않아요.</li>
+      <li><b>행동 종류</b>: 방문, 화면 종류(개요·지역·단지·관심단지), 검색 결과 선택(지역인지 단지인지만), 관심단지 추가·삭제와 개수, 관심단지의 새 거래 유무·건수와 확인 여부.</li>
+      <li><b>첫 방문 시각, 모바일 여부</b>, 서버가 받은 시각, 측정 방식 버전.</li>
+    </ul>
+
+    <h2>보내지 않는 것</h2>
+    <ul>
+      <li>검색어, 어떤 지역·단지를 봤거나 저장했는지(관심 목록 내용).</li>
+      <li>이름·연락처·이메일, 쿠키, 브라우저 지문.</li>
+      <li>IP 주소: 과도한 요청을 막는 판정에만 잠깐 쓰고 저장하지 않아요.</li>
+    </ul>
+
+    <h2>보관 기간</h2>
+    <ul>
+      <li>행동 기록과 날짜별 요약: 받은 날부터 90일 뒤 자동 삭제.</li>
+      <li>기기별 요약(첫 방문·관심단지 저장·재방문 날짜): 마지막 방문부터 90일 뒤 자동 삭제.</li>
+      <li>날짜별 합계(예: "10월 15일 방문 기기 120대")는 기기를 알아볼 수 없는 숫자라서 계속 보관해요.</li>
+    </ul>
+
+    <h2>처리 장소</h2>
+    <p>측정 기록은 Amazon Web Services 서울 리전(ap-northeast-2)의 운영자 계정에 저장돼요. 사이트 파일은 GitHub Pages로 제공되며, GitHub이 접속 기록을 따로 처리할 수 있어요(<a href="https://docs.github.com/ko/site-policy/privacy-policies/github-general-privacy-statement" target="_blank" rel="noopener">GitHub 개인정보처리방침</a>).</p>
+
+    <h2>측정 끄기와 기록 삭제</h2>
+    ${on ? `<p>측정을 끄면 이 브라우저는 더 이상 아무것도 보내지 않아요. 기록 삭제는 서버에 있는 이 기기의 기록을 바로 지우고 기기 ID를 새로 만들어요.</p>
+    <div class="row" style="gap:8px;flex-wrap:wrap">
+      <button type="button" class="btn" id="metricsToggle"></button>
+      <button type="button" class="btn" id="metricsDelete">이 기기 기록 삭제</button>
+    </div>
+    <p class="muted" id="metricsMsg" role="status" style="font-size:13px"></p>` : '<p>지금 이 사이트(또는 이 브라우저)에서는 측정이 켜져 있지 않아 보내는 기록이 없어요. 브라우저 저장소를 지우면 기기 ID도 함께 지워져요.</p>'}
+    <p>브라우저 설정에서 이 사이트의 저장 데이터를 지우면 관심단지와 함께 기기 ID도 지워져요. 이 경우 서버의 기록은 위 보관 기간이 지나면 삭제돼요.</p>
+
+    <h2>문의</h2>
+    <p><a href="https://github.com/Thirdsense3/homeTrend/issues" target="_blank" rel="noopener">GitHub 이슈</a>로 알려 주세요. 측정 항목이나 보관 기간이 바뀌면 이 페이지와 시행일을 먼저 고쳐요.</p>
+  </article>`;
+  if (!on) return;
+  const toggle = document.getElementById('metricsToggle'), msg = document.getElementById('metricsMsg');
+  const draw = () => { toggle.textContent = metrics.off() ? '측정 다시 켜기' : '이 브라우저에서 측정 끄기'; };
+  draw();
+  toggle.addEventListener('click', () => {
+    metrics.setOff(!metrics.off());
+    draw();
+    msg.textContent = metrics.off() ? '측정을 껐어요. 이 브라우저는 더 이상 기록을 보내지 않아요.' : '측정을 다시 켰어요.';
+  });
+  document.getElementById('metricsDelete').addEventListener('click', async (e) => {
+    e.target.disabled = true;
+    msg.textContent = '삭제하는 중…';
+    try {
+      await metrics.remove();
+      msg.textContent = '이 기기의 서버 기록을 지웠어요.' + (metrics.off() ? '' : ' 측정이 켜져 있으면 다음 방문부터 새 기기 ID로 기록돼요.');
+    } catch (err) {
+      msg.textContent = `삭제하지 못했어요 (${err.message}). 잠시 뒤 다시 시도해 주세요.`;
+    }
+    e.target.disabled = false;
+  });
+}
+
 // ---------- 관심단지 ----------
 async function viewWatch(id) {
   const saved = watch.list();
@@ -1564,8 +1713,14 @@ async function viewWatch(id) {
       <div id="cmpLegend"></div>
       <div class="chart-box"><canvas id="cmp"></canvas></div>
     </div>` : ''}`;
-  app.querySelector('.watch-grid').addEventListener('click', (e) => { const c = e.target.closest('[data-href]'); if (c) location.hash = c.dataset.href; });
+  app.querySelector('.watch-grid').addEventListener('click', (e) => {
+    const c = e.target.closest('[data-href]');
+    if (!c) return;
+    if (c.dataset.fresh) metrics.track('watch_change_open', { b: buildId(), t: +c.dataset.fresh });
+    location.hash = c.dataset.href;
+  });
   const cmp = [];
+  const changed = []; // 새 거래가 있는 단지의 새 거래 수 (측정: 개수만 보낸다)
   await Promise.all(list.map(async (w, i) => {
     const el = document.getElementById(`w${i}`);
     try {
@@ -1584,6 +1739,7 @@ async function viewWatch(id) {
         return prior.length && t.price > Math.max(...prior);
       });
       const badges = `${fresh.length ? `<span class="tag new">새 거래 ${fresh.length}건</span>` : ''}${high.length ? `<span class="tag high">신고가 ${high.length}건</span>` : ''}`;
+      if (fresh.length) { el.dataset.fresh = fresh.length; changed.push(fresh.length); }
       if (i < CMP_MAX) cmp[i] = { name: w.name, series: main.series.map((r) => ({ ym: r.ym, v: r.ma == null ? null : r.ma / (Number(main.area) / PYEONG) })) };
       el.innerHTML = `
         <div class="row"><b>${esc(w.name)}</b>${badges}<span class="spacer"></span><span class="muted">${esc(w.region)}</span></div>
@@ -1594,7 +1750,9 @@ async function viewWatch(id) {
       if (!isStale(id)) el.querySelector(':scope > .muted').textContent = `오류: ${e.message}`;
     }
   }));
-  if (isStale(id) || list.length < 2) return;
+  if (isStale(id)) return;
+  if (changed.length) metrics.track('watch_change_available', { b: buildId(), c: changed.length, t: changed.reduce((a, b) => a + b, 0) });
+  if (list.length < 2) return;
   compareChart(cmp.filter(Boolean));
 }
 

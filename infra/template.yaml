@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
-Description: homeTrend 서버 기반 (거래 이력 S3, DynamoDB, 상태 확인 API, Actions OIDC 역할, 비용 알림)
+Description: homeTrend 서버 기반 (거래 이력 S3, DynamoDB, 상태 확인·방문 측정 API, Actions OIDC 역할, 비용 알림)
 
 Parameters:
   GitHubSubjectPrefix:
@@ -102,7 +102,7 @@ Resources:
               Bool:
                 aws:SecureTransport: 'false'
 
-  # 동기화 목록·알림 구독·측정 집계 (단일 테이블, 2번 작업부터 사용)
+  # 동기화 목록·알림 구독·측정 (단일 테이블). 측정 항목 구조는 functions/metrics/metrics.mjs
   DataTable:
     Type: AWS::DynamoDB::Table
     DeletionPolicy: Retain
@@ -168,6 +168,70 @@ Resources:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: !Sub /aws/lambda/${HealthFunction}
+      RetentionInDays: 30
+
+  # 방문 측정 (로드맵 2번). 규칙은 functions/metrics/metrics.mjs, 개인정보처리방침은 사이트 #/privacy
+  EventsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: functions/metrics/
+      Handler: events.handler
+      Environment:
+        Variables:
+          TABLE: !Ref DataTable
+          ALLOWED_ORIGIN: !Ref AllowedOrigin
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: [dynamodb:GetItem, dynamodb:PutItem, dynamodb:UpdateItem, dynamodb:Query, dynamodb:DeleteItem, dynamodb:BatchWriteItem]
+              Resource: !GetAtt DataTable.Arn
+      Events:
+        Record:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref Api
+            Path: /events
+            Method: POST
+        Remove:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref Api
+            Path: /devices/{id}
+            Method: DELETE
+
+  EventsLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${EventsFunction}
+      RetentionInDays: 30
+
+  MetricsAggregateFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: functions/metrics/
+      Handler: aggregate.handler
+      Timeout: 300
+      Environment:
+        Variables:
+          TABLE: !Ref DataTable
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: [dynamodb:Scan, dynamodb:Query, dynamodb:PutItem, dynamodb:DeleteItem, dynamodb:BatchWriteItem]
+              Resource: !GetAtt DataTable.Arn
+      Events:
+        Daily:
+          Type: ScheduleV2
+          Properties:
+            ScheduleExpression: cron(0 5 * * ? *)
+            ScheduleExpressionTimezone: Asia/Seoul
+            RetryPolicy:
+              MaximumRetryAttempts: 2
+
+  MetricsAggregateLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${MetricsAggregateFunction}
       RetentionInDays: 30
 
   GitHubOidcProvider:
@@ -281,6 +345,7 @@ Resources:
 
 Outputs:
   ApiUrl:
+    Description: 저장소 변수 API_URL (사이트가 방문 이벤트를 보낼 주소)
     Value: !Sub https://${Api}.execute-api.${AWS::Region}.amazonaws.com
   HistoryBucketName:
     Description: 저장소 변수 HISTORY_BUCKET
