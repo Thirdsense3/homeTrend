@@ -170,11 +170,19 @@ async function getApt(code, key, months) {
   if (t.every((x) => x.bulk)) throw new Error('해당 기간에 일괄 거래(통매각)만 있어 시세를 계산할 수 없는 단지입니다');
   const r = rents.filter((x) => A.aptKey(x) === key).sort((a, b) => a.date.localeCompare(b.date));
   const last = t[t.length - 1];
+  const cur = both.filter((x) => x.partial);
+  // 평형 목록: 시세·차트는 지난달까지로 계산하되, 이번 달에만 거래가 있는 평형도 고를 수 있게 뒤에 붙인다 (partialOnly)
+  const { areas } = A.apartmentDetail(yms, t, r);
+  const curCount = (area) => cur.filter((x) => A.areaKey(x.area) === area).length;
+  areas.forEach((a) => { a.partialCount = curCount(a.area); });
+  for (const area of new Set(cur.map((x) => A.areaKey(x.area)))) {
+    if (!areas.some((a) => a.area === area)) areas.push({ area, count: 0, partialCount: curCount(area), partialOnly: true });
+  }
   return {
     apt: { key, name: last.apt, dong: last.dong, jibun: last.jibun, built: last.built },
-    ...A.apartmentDetail(yms, t, r),
+    areas,
     trades: t,
-    partial: both.filter((x) => x.partial),
+    partial: cur,
     rents: r,
   };
 }
@@ -1679,8 +1687,8 @@ async function viewApt(code, key, id) {
       <a href="https://rt.molit.go.kr/" target="_blank" rel="noopener" class="copy-name" title="단지명이 복사돼요. 검색창에 붙여넣으세요">국토부 실거래가</a>
       <span class="muted" id="copied" style="font-size:12px"></span>
     </p>
-    <div class="row" style="margin-bottom:16px"><span class="muted">전용면적</span><div class="seg" id="areas">${d.areas.map((a) => `<button data-a="${a.area}" class="${a.area === areaSel ? 'on' : ''}">${a.area}㎡ <span class="muted">(매매 ${a.count}건)</span></button>`).join('')}</div></div>
-    <p class="muted">조회 기간에 매매 또는 전세 거래가 있는 전용면적입니다. 원본 면적을 소수 둘째 자리까지 구분합니다.${A.apartmentNames(code, apt.dong, apt.name, apt.jibun).length > 1 ? ` 원본 명칭: ${esc(A.apartmentNames(code, apt.dong, apt.name, apt.jibun).filter((n) => n !== apt.name).join(', '))}` : ''}</p><div id="areaView"></div>`;
+    <div class="row" style="margin-bottom:16px"><span class="muted">전용면적</span><div class="seg" id="areas">${d.areas.map((a) => `<button data-a="${a.area}" class="${a.area === areaSel ? 'on' : ''}">${a.area}㎡ <span class="muted">(${a.partialOnly ? `이번 달 ${a.partialCount}건 · 신고 진행 중` : `매매 ${a.count}건${a.partialCount ? ` · 이번 달 ${a.partialCount}건` : ''}`})</span></button>`).join('')}</div></div>
+    <p class="muted">조회 기간에 매매 또는 전세 거래가 있는 전용면적입니다. 원본 면적을 소수 둘째 자리까지 구분합니다.${d.areas.some((a) => a.partialCount) ? ' 매매 건수는 지난달까지이고, 이번 달(신고 진행 중) 거래는 따로 셉니다.' : ''}${A.apartmentNames(code, apt.dong, apt.name, apt.jibun).length > 1 ? ` 원본 명칭: ${esc(A.apartmentNames(code, apt.dong, apt.name, apt.jibun).filter((n) => n !== apt.name).join(', '))}` : ''}</p><div id="areaView"></div>`;
   bindMonths(monthView);
   app.querySelectorAll('.copy-name').forEach((a) => a.addEventListener('click', () => {
     navigator.clipboard?.writeText(apt.name).then(() => {
@@ -1701,6 +1709,22 @@ async function viewApt(code, key, id) {
   function renderArea() {
     destroyCharts();
     const sel = d.areas.find((a) => a.area === areaSel);
+    // 이번 달에만 거래가 있는 평형: 시세·차트 없이 신고 진행 중인 거래와 전세만 보여 준다
+    if (sel.partialOnly) {
+      const cur = d.partial.filter((t) => A.areaKey(t.area) === areaSel);
+      const jeonse = d.rents.filter((t) => A.areaKey(t.area) === areaSel && t.monthly === 0);
+      document.getElementById('areaView').innerHTML = `
+        <p class="card muted">이 평형은 이번 달(신고 진행 중) 매매만 있어요. ${PARTIAL_HELP}</p>
+        <div class="grid2">
+          <div class="card table-wrap"><h2>최근 매매</h2><table><thead><tr><th class="l">계약일</th><th>층</th><th>거래가</th><th>평당가</th><th class="l">유형</th></tr></thead><tbody>
+            ${cur.slice().reverse().map((t) => `<tr${t.bulk ? ' class="muted"' : ''}><td class="l">${t.date.slice(2).replace(/-/g, '.')}</td><td>${t.floor}</td><td>${fmtEok(t.price)}</td><td>${fmtMan(t.price / (t.area / PYEONG))}</td><td class="l muted">${partialTag} ${esc(t.kind)}${t.bulk ? ` · <span class="tag" title="같은 날 직거래 ${BULK_HINT}">일괄</span>` : ''}</td></tr>`).join('')}
+          </tbody></table></div>
+          <div class="card table-wrap"><h2>최근 전세</h2><table><thead><tr><th class="l">계약일</th><th>층</th><th>보증금</th><th class="l">원본 명칭</th></tr></thead><tbody>
+            ${jeonse.slice(-25).reverse().map((t) => `<tr><td class="l">${t.date.slice(2).replace(/-/g, '.')}</td><td>${t.floor}</td><td>${fmtEok(t.deposit)}</td><td class="l muted">${esc(t.sourceApt || t.apt)}</td></tr>`).join('') || '<tr><td class="l muted" colspan="4">전세 거래 없음</td></tr>'}
+          </tbody></table></div>
+        </div>`;
+      return;
+    }
     const ind = sel.indicators;
     const all = d.trades.filter((t) => A.areaKey(t.area) === areaSel);
     const trades = all.filter((t) => !t.bulk);

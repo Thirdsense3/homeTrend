@@ -116,6 +116,20 @@ test('이력 파일: 없으면 null, 깨져 있으면 멈춘다', () => {
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('원본 명칭 거래가 모두 사라져도 삭제 항목은 대표 단지 키로 잇는다', () => {
+  // 돈암동 609-1 한신·한진(609-1)은 대표 단지 '한신한진'으로 묶인다 (lib/complexes.js). 국토부 원본처럼 정규화 전 이름으로 넣는다
+  const raw = (apt, price) => ({ dong: '돈암동', apt, jibun: '609-1', date: '2026-08-03', area: 84.87, floor: 5, price, kind: '중개거래' });
+  const norm = (rows) => require('../lib/analyze').normalizeRows('11290', rows);
+  const l1 = run(null, [{ ym: '202608', rows: norm([raw('한신', 80000), raw('한진(609-1)', 81000)]) }], 101).ledger;
+  const r = run(l1, [{ ym: '202608', rows: norm([raw('한신', 80000)]) }], 201);
+  assert.equal(r.removed.length, 1);
+  assert.equal(r.removed[0].apt, '한신한진');
+  assert.equal(r.removed[0].sourceApt, '한진(609-1)');
+  const [del] = ch.tradeChanges({ code: '11290', trades: [], added: [], removed: r.removed, no: 201, today: TODAY, complete: true });
+  assert.equal(del.key, '돈암동|한신한진');
+  assert.equal(r.ledger.names['돈암동|한진(609-1)'], '한신한진'); // 다음 빌드에도 남는다
+});
+
 // ---------- 변화 ----------
 const TODAY = '2026-10-18';
 // 직전 6개월에 10억 안팎 거래 n건
