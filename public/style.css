@@ -338,3 +338,5 @@ ul.changes a { color: var(--series-1); text-decoration: none; }
 .feed-regions { display: flex; flex-wrap: wrap; gap: 6px; }
 .feed-regions a { font-size: 12px; text-decoration: none; border: 1px solid var(--border); border-radius: 999px; padding: 1px 8px; }
 .feed-regions a:hover { background: var(--accent-wash); }
+/* 이번 달(신고 진행 중) 거래: 아직 늘어나는 잠정 값이라 점선 테두리 */
+.tag.partial { color: var(--ink-2); border-style: dashed; border-color: var(--axis); }

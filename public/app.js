@@ -96,17 +96,20 @@ function unpack(p, months, code) {
   // 조회 기간 밖 단지도 포함해 옛 링크와 관심단지의 주소를 확인한다.
   (state.complexes ||= {})[code] = apts.map(([dong, apt, built, jibun]) => ({ dong, apt, jibun }));
   // firstSeen: 이 거래를 처음 확인한 데이터 빌드 번호 (0 = 이력을 쌓기 전부터 있던 거래)
-  const trades = p.t.filter((r) => r[1] >= from).map(([i, d, a, floor, price, direct, source, firstSeen]) => ({
+  // 조회 기간(완성된 달) 뒤의 거래는 이번 달(신고 진행 중) 거래다. 지표·차트에 섞이지 않게 partial로 따로 둔다
+  const to = Number(p.yms[p.yms.length - 1] + '31');
+  const tradeRows = p.t.filter((r) => r[1] >= from).map(([i, d, a, floor, price, direct, source, firstSeen]) => ({
     dong: apts[i][0], apt: apts[i][1], built: apts[i][2], jibun: apts[i][3],
     sourceApt: p.names?.[source] || apts[i][1],
-    date: dateStr(d), area: a / 100, floor, price, kind: direct ? '직거래' : '중개거래', firstSeen: firstSeen || 0,
+    date: dateStr(d), area: a / 100, floor, price, kind: direct ? '직거래' : '중개거래', firstSeen: firstSeen || 0, partial: d > to,
   }));
+  const trades = tradeRows.filter((t) => !t.partial), partial = tradeRows.filter((t) => t.partial);
   const rents = p.j.filter((r) => r[1] >= from).map(([i, d, a, floor, deposit, source]) => ({
     dong: apts[i][0], apt: apts[i][1], built: apts[i][2], jibun: apts[i][3],
     sourceApt: p.names?.[source] || apts[i][1],
     date: dateStr(d), area: a / 100, floor, deposit, monthly: 0,
   }));
-  return { yms, trades: A.normalizeRows(code, trades), rents: A.normalizeRows(code, rents) };
+  return { yms, trades: A.normalizeRows(code, trades), partial: A.normalizeRows(code, partial), rents: A.normalizeRows(code, rents) };
 }
 // 지역 원본은 한 번 받아 메모리에 두고, 지역·단지 화면 모두 여기서 계산
 async function getRaw(code, months) {
@@ -127,10 +130,12 @@ async function getRegion(code, months, brokerOnly) {
   summary.indicators.candidate = hasMissing(code) ? null : A.candidateScore(summary.indicators, summary.series);
   return { ...summary, apartments: A.apartmentList(trades) };
 }
+// partial: 이번 달(신고 진행 중) 거래. 시세·차트·지표에는 쓰지 않고 목록에서만 따로 표시한다
 async function getApt(code, key, months) {
-  const { yms, trades, rents } = await getRaw(code, months);
+  const { yms, trades, partial, rents } = await getRaw(code, months);
   key = A.canonicalKey(code, key, state.complexes?.[code]);
-  const t = A.markBulk(trades.filter((x) => A.aptKey(x) === key)).sort((a, b) => a.date.localeCompare(b.date));
+  const both = A.markBulk([...trades, ...partial].filter((x) => A.aptKey(x) === key)).sort((a, b) => a.date.localeCompare(b.date));
+  const t = both.filter((x) => !x.partial);
   if (!t.length) throw new Error('해당 기간에 거래가 없는 단지입니다');
   if (t.every((x) => x.bulk)) throw new Error('해당 기간에 일괄 거래(통매각)만 있어 시세를 계산할 수 없는 단지입니다');
   const r = rents.filter((x) => A.aptKey(x) === key).sort((a, b) => a.date.localeCompare(b.date));
@@ -139,6 +144,7 @@ async function getApt(code, key, months) {
     apt: { key, name: last.apt, dong: last.dong, jibun: last.jibun, built: last.built },
     ...A.apartmentDetail(yms, t, r),
     trades: t,
+    partial: both.filter((x) => x.partial),
     rents: r,
   };
 }
@@ -885,7 +891,7 @@ function highlight(text, q) {
 
 // ---------- 개요: 지역별 비교 ----------
 const hasMissing = (code) => (state.meta?.missing || []).some((m) => m.startsWith(`${code}/`));
-const tradeMissing = (code) => (state.meta?.missing || []).some((m) => m.startsWith(`${code}/trade/`));
+const tradeMissing = (code) => (state.meta?.missing || []).some((m) => m.startsWith(`${code}/trade/`)) || !!state.meta?.partial?.missing.includes(code);
 const candidateCell = (r) => {
   const c = hasMissing(r.code) ? null : r.ind?.candidate;
   return c ? `<span title="${esc(c.factors.map((f) => `${f.name} ${f.points}점`).join(' · '))}">${c.score}점</span>` : '<span class="muted">–</span>';
@@ -1011,8 +1017,8 @@ function bindSort(root, sortKey, rerender) {
 // ---------- 첫 화면: 오늘 들어온 거래 (data/changes.json) ----------
 // 새로 확인된 거래 = 이번 데이터 갱신에서 처음 확인된 거래. 계약일·신고일과 다르다
 const FEED_ROWS = 8;
-const FEED_HELP = '이 날 데이터 갱신에서 처음 확인된 매매 거래예요. 신고일과는 다를 수 있고, 계약일이 지난 거래가 늦게 신고되면 여기에 들어와요. 삭제는 지난 갱신에 있던 거래가 사라진 것으로, 해제·정정을 구분하지 않아요. 해제·정정은 최근 12개월 매매만 다시 확인해요. 급등은 이미 신고된 거래와 공개 지수 기준이며 앞으로의 가격을 뜻하지 않아요.';
-const flagTags = (x) => `${x.flags?.includes('surge') ? ' <span class="tag high">급등</span>' : x.flags?.includes('highPrice') ? ' <span class="tag">높은 가격</span>' : ''}${x.flags?.includes('high') ? ' <span class="tag high">신고가</span>' : ''}${x.direct ? ' <span class="tag">직거래</span>' : ''}`;
+const FEED_HELP = '이 날 데이터 갱신에서 처음 확인된 매매 거래예요. 신고일과는 다를 수 있고, 계약일이 지난 거래가 늦게 신고되면 여기에 들어와요. 삭제는 지난 갱신에 있던 거래가 사라진 것으로, 해제·정정을 구분하지 않아요. 해제·정정은 최근 12개월 매매만 다시 확인해요. 이번 달 계약도 신고되는 대로 보여 주지만, 신고가 진행 중이라 지역 지표·차트에는 다음 달부터 반영해요. 급등은 이미 신고된 거래와 공개 지수 기준이며 앞으로의 가격을 뜻하지 않아요.';
+const flagTags = (x) => `${isPartialDate(x.date) ? ` ${partialTag}` : ''}${x.flags?.includes('surge') ? ' <span class="tag high">급등</span>' : x.flags?.includes('highPrice') ? ' <span class="tag">높은 가격</span>' : ''}${x.flags?.includes('high') ? ' <span class="tag high">신고가</span>' : ''}${x.direct ? ' <span class="tag">직거래</span>' : ''}`;
 const aptLink = (x) => `<a href="#/a/${x.code}/${encodeURIComponent(x.key)}">${esc(x.name)}</a>`;
 const regionShort = (code) => (regionOf(code)?.name || code).replace(/ \(.+\)/, '');
 const phaseLabel = (id) => `${id ? `${id}국면 ` : ''}${A.PHASES[id]?.name || ''}`;
@@ -1048,6 +1054,7 @@ async function renderFeed(group, id) {
   const notes = [];
   const failed = regs.filter((r) => r.failed);
   if (failed.length) notes.push(`${failed.length <= 3 ? failed.map((r) => esc(regionShort(r.code))).join('·') : `${failed.length}개 지역`}은 일부 달을 받지 못해 그 달은 비교하지 않았어요`);
+  if (news.some((x) => isPartialDate(x.date))) notes.push(`'이번 달 · 신고 진행 중' 거래는 지역 지표·차트에는 다음 달부터 반영돼요`);
   const opened = [...new Set(regs.flatMap((r) => r.opened || []))];
   if (opened.length) notes.push(`${opened.map((ym) => `${+ym.slice(4)}월`).join('·')} 거래가 처음 반영돼 한꺼번에 들어왔어요`);
   // 관심단지 중 아직 확인하지 않은 새 거래 (관심단지 화면과 같은 기준: 마지막 확인 빌드 뒤).
@@ -1670,6 +1677,7 @@ async function viewApt(code, key, id) {
     const max = trades.length ? trades.reduce((a, b) => (b.price > a.price ? b : a)) : null;
     const last = trades[trades.length - 1];
     const jRecent = median(jeonse.slice(-5).map((t) => t.deposit));
+    const cur = d.partial.filter((t) => A.areaKey(t.area) === areaSel); // 이번 달(신고 진행 중): 목록에만
 
     document.getElementById('areaView').innerHTML = `
       <div class="kpis">
@@ -1697,11 +1705,11 @@ async function viewApt(code, key, id) {
           </div>
         </div>
         <div class="tv-stage"><div class="tv-box" id="ap"></div><div class="tv-pop" id="apPop" hidden></div></div>
-        <p class="muted tv-note">점이나 월봉을 누르면 상세 정보가 나와요 · <span class="up">빨간 테두리</span> = 신고가</p>
+        <p class="muted tv-note">점이나 월봉을 누르면 상세 정보가 나와요 · <span class="up">빨간 테두리</span> = 신고가${cur.length ? ` · 이번 달 거래 ${cur.length}건은 신고 진행 중이라 차트·시세에 넣지 않았어요 (아래 최근 매매에 표시)` : ''}</p>
       </div>
       <div class="grid2">
-        <div class="card table-wrap"><h2>최근 매매</h2><table><thead><tr><th class="l">계약일</th><th>층</th><th>거래가</th><th>평당가</th><th class="l">유형</th></tr></thead><tbody>
-          ${all.slice(-25).reverse().map((t) => `<tr${t.bulk ? ' class="muted"' : ''}><td class="l">${t.date.slice(2).replace(/-/g, '.')}</td><td>${t.floor}</td><td>${fmtEok(t.price)}</td><td>${fmtMan(t.price / (t.area / PYEONG))}</td><td class="l muted">${esc(t.kind)}${t.sourceApt && t.sourceApt !== apt.name ? ` · ${esc(t.sourceApt)}` : ''}${t.bulk ? ` · <span class="tag" title="같은 날 직거래 ${BULK_HINT}">일괄</span>` : ''}</td></tr>`).join('')}
+        <div class="card table-wrap"><h2>최근 매매</h2>${cur.length ? `<p class="muted" style="font-size:12px;margin:0 0 8px">${PARTIAL_HELP}</p>` : ''}<table><thead><tr><th class="l">계약일</th><th>층</th><th>거래가</th><th>평당가</th><th class="l">유형</th></tr></thead><tbody>
+          ${[...all.slice(-25), ...cur].reverse().map((t) => `<tr${t.bulk ? ' class="muted"' : ''}><td class="l">${t.date.slice(2).replace(/-/g, '.')}</td><td>${t.floor}</td><td>${fmtEok(t.price)}</td><td>${fmtMan(t.price / (t.area / PYEONG))}</td><td class="l muted">${t.partial ? `${partialTag} ` : ''}${esc(t.kind)}${t.sourceApt && t.sourceApt !== apt.name ? ` · ${esc(t.sourceApt)}` : ''}${t.bulk ? ` · <span class="tag" title="같은 날 직거래 ${BULK_HINT}">일괄</span>` : ''}</td></tr>`).join('')}
         </tbody></table></div>
         <div class="card table-wrap"><h2>최근 전세</h2><table><thead><tr><th class="l">계약일</th><th>층</th><th>보증금</th><th class="l">원본 명칭</th></tr></thead><tbody>
           ${jeonse.slice(-25).reverse().map((t) => `<tr><td class="l">${t.date.slice(2).replace(/-/g, '.')}</td><td>${t.floor}</td><td>${fmtEok(t.deposit)}</td><td class="l muted">${esc(t.sourceApt || t.apt)}</td></tr>`).join('') || '<tr><td class="l muted" colspan="4">전세 거래 없음</td></tr>'}
@@ -1788,6 +1796,10 @@ function viewPrivacy() {
 }
 
 // ---------- 관심단지 ----------
+// 이번 달(신고 진행 중) 거래 표시. 시세·차트·지표에는 넣지 않고 목록에서만 이 표시와 함께 보여 준다
+const PARTIAL_HELP = '이번 달 계약은 신고 기한(계약 후 30일)이 남아 거래가 계속 늘어나요. 그래서 시세·차트·지역 지표에는 넣지 않고, 다음 달부터 반영해요.';
+const partialTag = `<span class="tag partial" title="${PARTIAL_HELP}">이번 달 · 신고 진행 중</span>`;
+const isPartialDate = (date) => !!state.meta?.partial && date.slice(0, 4) + date.slice(5, 7) === state.meta.partial.ym;
 // 빌드 번호 → 그 빌드의 날짜 (meta.builds). 0이나 모르는 번호는 null
 const buildDate = (no) => state.meta?.builds?.[no] || null;
 const md = (d) => (d ? `${+d.slice(5, 7)}/${+d.slice(8, 10)}` : '–'); // 2026-10-05 → 10/5
@@ -1810,7 +1822,7 @@ async function viewWatch(id) {
     return;
   }
   const help = no
-    ? "주력 평형 기준이에요. 지난번 확인한 뒤의 데이터 갱신에서 처음 확인된 실거래를 '새로 확인'으로 표시해요. 계약일이 지난 거래가 늦게 신고돼도 잡혀요. 단지를 눌러 상세를 보면 확인한 것으로 바뀌어요. 실거래 신고 기한이 계약 후 30일이라 최근 2개월 거래는 계속 늘어나요."
+    ? "주력 평형 기준이에요. 지난번 확인한 뒤의 데이터 갱신에서 처음 확인된 실거래를 '새로 확인'으로 표시해요. 계약일이 지난 거래가 늦게 신고돼도 잡혀요. 단지를 눌러 상세를 보면 확인한 것으로 바뀌어요. '이번 달 · 신고 진행 중' 거래는 새로 확인된 거래로는 보여 주지만, 시세·차트에는 다음 달부터 반영해요."
     : '주력 평형 기준이에요. 눌러서 상세를 볼 수 있어요.';
   app.innerHTML = `<div class="row"><h1>관심단지 ${tip(help)}</h1><span class="spacer"></span>${no ? `<span class="muted" style="font-size:12px">${md(buildDate(no))} 갱신</span><button type="button" class="btn" id="checkAll" hidden>모두 확인</button>` : ''}</div>
     <div class="watch-grid">${list.map((w, i) => `
@@ -1868,15 +1880,17 @@ async function viewWatch(id) {
       const tr = d.trades.filter((t) => !t.bulk && A.areaKey(t.area) === main.area);
       const recentPrice = median(tr.slice(-3).map((t) => t.price));
       const market = d.trades.filter((t) => !t.bulk);
+      // 이번 달(신고 진행 중) 거래는 시세·지표에는 넣지 않지만 새로 확인된 거래와 신고가 비교에는 넣는다
+      const withCur = [...market, ...d.partial.filter((t) => !t.bulk)];
       // 새로 확인된 거래: 마지막으로 확인한 빌드 뒤에 처음 확인된 거래. 확인 기록이 없으면 지금 빌드부터 센다
       const isFresh = (t) => no && t.firstSeen > since;
-      const fresh = market.filter(isFresh).sort((a, b) => b.date.localeCompare(a.date));
+      const fresh = withCur.filter(isFresh).sort((a, b) => b.date.localeCompare(a.date));
       // 신고가: 같은 평형에서 확인 시점까지 본 거래의 최고가를 넘은 새 거래. 이전 거래가 없는 평형은 세지 않는다.
       // 이 지역 매매 수집에 실패한 달이 있으면 이전 최고가가 빠졌을 수 있어 판정하지 않는다 (빌드의 tradeChanges와 같은 기준)
       const complete = !tradeMissing(w.code);
       const isHigh = (t) => {
         if (!complete) return false;
-        const prior = market.filter((o) => !isFresh(o) && A.areaKey(o.area) === A.areaKey(t.area)).map((o) => o.price);
+        const prior = withCur.filter((o) => !isFresh(o) && A.areaKey(o.area) === A.areaKey(t.area)).map((o) => o.price);
         return prior.length && t.price > Math.max(...prior);
       };
       const high = fresh.filter(isHigh);
@@ -1884,13 +1898,13 @@ async function viewWatch(id) {
       if (fresh.length) { el.dataset.fresh = fresh.length; changed.push(fresh.length); }
       if (fresh.length || gone.length) document.getElementById('checkAll')?.removeAttribute('hidden');
       const lines = [
-        ...fresh.slice(0, 3).map((t) => `<li>${tradeLine(t)}${isHigh(t) ? ' <span class="tag high">신고가</span>' : ''}${t.kind === '직거래' ? ' <span class="tag">직거래</span>' : ''}</li>`),
+        ...fresh.slice(0, 3).map((t) => `<li>${tradeLine(t)}${isHigh(t) ? ' <span class="tag high">신고가</span>' : ''}${t.kind === '직거래' ? ' <span class="tag">직거래</span>' : ''}${t.partial ? ` ${partialTag}` : ''}</li>`),
         fresh.length > 3 ? `<li class="muted">외 ${fresh.length - 3}건</li>` : '',
         ...surge.slice(0, 1).map((x) => `<li><span class="up">급등</span> ${x.area}㎡ · ${surgeBasis(x.basis)} <span class="muted">(${SURGE_NOTE})</span></li>`),
         ...goneLines,
         fresh.length && !complete ? '<li class="muted">일부 달의 매매를 받지 못해 신고가는 판정하지 않았어요</li>' : '',
       ].filter(Boolean);
-      const last = market[market.length - 1];
+      const last = withCur.reduce((a, b) => (b.date > a.date ? b : a));
       if (i < CMP_MAX) cmp[i] = { name: w.name, series: main.series.map((r) => ({ ym: r.ym, v: r.ma == null ? null : r.ma / (Number(main.area) / PYEONG) })) };
       el.innerHTML = `
         <div class="row"><b>${esc(w.name)}</b>${badges}<span class="spacer"></span><span class="muted">${esc(w.region)}</span></div>
@@ -1898,7 +1912,7 @@ async function viewWatch(id) {
         <div class="row" style="font-size:12px;margin-top:6px">최고가 대비 ${delta(recentPrice / main.maxPrice - 1)} · 전세가율 ${fmtPct(main.indicators.jeonseRatio, 0)}</div>
         <div style="margin-top:6px">${phaseChip(main.indicators.phase)}</div>
         ${lines.length ? `<ul class="changes">${lines.join('')}</ul>` : ''}
-        <div class="muted" style="font-size:12px;margin-top:6px">최근 계약 ${fmtDate(last.date)}${checkedLine ? ` · ${checkedLine}` : ''}${no && !lines.length ? ' · 새로 확인된 거래 없음' : ''}</div>`;
+        <div class="muted" style="font-size:12px;margin-top:6px">최근 계약 ${fmtDate(last.date)}${last.partial ? ' (이번 달 · 신고 진행 중)' : ''}${checkedLine ? ` · ${checkedLine}` : ''}${no && !lines.length ? ' · 새로 확인된 거래 없음' : ''}</div>`;
     } catch (e) {
       if (!isStale(id)) el.querySelector(':scope > .muted').textContent = `오류: ${e.message}`;
     }

@@ -3,7 +3,7 @@
 require('../lib/env');
 const fs = require('fs');
 const path = require('path');
-const { getMonth, monthRange, mode, pool } = require('../lib/data');
+const { getMonth, monthRange, currentYm, mode, pool } = require('../lib/data');
 const an = require('../lib/analyze');
 const { pack } = require('../lib/pack');
 const forecast = require('../lib/forecast');
@@ -30,6 +30,10 @@ function write(rel, data) {
 
 (async () => {
   const yms = monthRange(MONTHS);
+  // 이번 달 매매도 받는다. 신고가 진행 중이라 지역 지표·예측·차트에는 넣지 않고(yms 밖),
+  // 거래 이력·피드·관심단지에서 '이번 달 · 신고 진행 중'으로 따로 보여 준다. 월이 바뀌어도 이미 기록돼 있어 한꺼번에 몰리지 않는다
+  const partialYm = currentYm();
+  const isPartial = (r) => r.date.slice(0, 4) + r.date.slice(5, 7) === partialYm;
   console.log(`빌드: ${mode() === 'live' ? '국토부 API' : '데모 데이터'}, ${yms[0]}~${yms[yms.length - 1]} (${MONTHS}개월), ${regions.length}개 지역`);
   fs.rmSync(DIST, { recursive: true, force: true });
 
@@ -37,7 +41,7 @@ function write(rel, data) {
   let total = 0, bytes = 0;
   // 한 달 실패로 지역 전체를 버리지 않도록 월 단위로 받는다 (API 호출은 molit.js에서 직렬화됨)
   // 수집 실패와 실제 거래 0건을 구분해야 이력 비교에서 실패한 달을 삭제로 보지 않는다 → 월별 { ym, ok, rows }
-  const fetchAll = (kind, code) => pool(yms, 6, async (ym) => {
+  const fetchAll = (kind, code, months = yms) => pool(months, 6, async (ym) => {
     total++;
     try {
       return { ym, ok: true, rows: await getMonth(kind, code, ym) };
@@ -72,35 +76,39 @@ function write(rel, data) {
   const search = {};
   const panels = [];
   await pool(regions, 2, async (r) => {
-    const [tradeMonths, rentMonths] = [await fetchAll('trade', r.code), await fetchAll('rent', r.code)];
-    const trades = tradeMonths.flatMap((m) => m.rows), rents = rentMonths.flatMap((m) => m.rows);
+    const [tradeMonths, rentMonths] = [await fetchAll('trade', r.code, [...yms, partialYm]), await fetchAll('rent', r.code)];
+    // all: 이번 달 포함 (이력·변화·지역 데이터 파일), trades: 완성된 달까지 (지표·예측). 지표 쪽 실패 판정도 완성된 달만 본다
+    const all = tradeMonths.flatMap((m) => m.rows), trades = all.filter((t) => !isPartial(t)), rents = rentMonths.flatMap((m) => m.rows);
+    const failed = failures.some((f) => f.code === r.code && f.ym !== partialYm);
     // 이전 이력과 비교해 거래마다 처음 확인한 빌드 번호(firstSeen)를 붙인다. 성공한 달만 비교한다
     const prev = no ? ledger.read(r.code) : null;
     const obs = no ? ledger.observe(prev, tradeMonths, no) : null;
-    bytes += write(`data/region/${r.code}.json`, pack(yms, trades, rents));
+    bytes += write(`data/region/${r.code}.json`, pack(yms, all, rents));
     search[r.code] = an.searchEntries(trades);
     // 지표(고점·장기 평균 거래량)는 받은 기간 전체로 계산하고, 스파크라인·궤적용 시계열만 잘라 보낸다
     const { series, indicators } = an.regionSummary(yms, trades, rents);
-    indicators.candidate = failures.some((f) => f.code === r.code) ? null : an.candidateScore(indicators, series);
-    if (mode() === 'live' && !failures.some((f) => f.code === r.code)) panels.push(forecast.preparePanel(r.code, yms, trades, rents));
+    indicators.candidate = failed ? null : an.candidateScore(indicators, series);
+    if (mode() === 'live' && !failed) panels.push(forecast.preparePanel(r.code, yms, trades, rents));
     write(`data/overview/${r.code}.json`, { code: r.code, series: series.slice(-OVERVIEW_MONTHS).map(({ ym, ma, count }) => ({ ym, ma, count })), indicators });
     if (obs) {
       // 신고가·급등·국면처럼 여러 달을 보는 변화는 이 지역 매매 수집이 모두 성공했을 때만 확정한다
+      // (거래 변화는 이번 달까지, 국면은 완성된 달로 계산하므로 완성된 달만)
       const complete = tradeMonths.every((m) => m.ok);
-      const tradeItems = ch.tradeChanges({ code: r.code, trades, added: obs.added, removed: obs.removed, no, today, complete, recent });
+      const tradeItems = ch.tradeChanges({ code: r.code, trades: all, added: obs.added, removed: obs.removed, no, today, complete, recent });
       items.push(...tradeItems);
-      const reg = ch.regionChanges({ code: r.code, prev, ind: indicators, weekly: reb?.regions?.[r.code]?.weekly, complete, no, today, recent });
+      const reg = ch.regionChanges({ code: r.code, prev, ind: indicators, weekly: reb?.regions?.[r.code]?.weekly, complete: !failed && tradeMonths.slice(0, -1).every((m) => m.ok), no, today, recent });
       items.push(...reg.items);
       const added = tradeItems.filter((x) => x.type === 'new' && !x.bulk).length; // 일괄 거래 제외
       const lastAdded = added ? { d: today, n: added + (prev?.lastAdded?.d === today ? prev.lastAdded.n : 0) } : prev?.lastAdded || null;
       ledger.write(r.code, { ...obs.ledger, ...reg.state, lastAdded });
       regionStats[r.code] = {
-        added, removed: obs.removed.length, failed: !complete, opened: obs.opened,
-        lastAdded, lastTrade: trades.reduce((m, t) => (t.date > m ? t.date : m), ''),
+        // 이번 달이 처음 들어오는 건 매달 1일의 정상 흐름이라 '한꺼번에 반영' 안내에서 뺀다
+        added, removed: obs.removed.length, failed: !complete, opened: obs.opened.filter((ym) => ym !== partialYm),
+        lastAdded, lastTrade: all.reduce((m, t) => (t.date > m ? t.date : m), ''),
       };
       if (prev) continued = true;
     }
-    console.log(`[${++done}/${regions.length}] ${r.name}: 매매 ${trades.length.toLocaleString()} · 전월세 ${rents.length.toLocaleString()}${obs ? ` · 새로 확인 ${obs.added.length} · 삭제 ${obs.removed.length}` : ''}`);
+    console.log(`[${++done}/${regions.length}] ${r.name}: 매매 ${trades.length.toLocaleString()} (이번 달 ${(all.length - trades.length).toLocaleString()}) · 전월세 ${rents.length.toLocaleString()}${obs ? ` · 새로 확인 ${obs.added.length} · 삭제 ${obs.removed.length}` : ''}`);
   });
 
   // 변화 파일: 오늘(KST) 확인된 변화(첫 화면 피드), 최근 30일 변화(삭제된 거래·급등·국면). 다음 빌드가 이어 쓰도록 이력에도 둔다
@@ -125,7 +133,9 @@ function write(rel, data) {
 
   // 전체 단지 검색 목록 (상단 검색창)
   write('data/search.json', { v: 1, regions: search });
-  write('data/forecasts.json', forecast.buildForecasts(panels, { source: mode(), missing: failures.map(({ code, kind, ym }) => `${code}/${kind}/${ym}`) }));
+  // 수집 누락은 완성된 달만 (이번 달 실패는 지표·예측에 영향이 없다). 이번 달 실패는 meta.partial.missing으로 따로 알린다
+  const missing = failures.filter((f) => f.ym !== partialYm).map(({ code, kind, ym }) => `${code}/${kind}/${ym}`);
+  write('data/forecasts.json', forecast.buildForecasts(panels, { source: mode(), missing }));
 
   write('data/meta.json', {
     mode: 'static',
@@ -141,7 +151,9 @@ function write(rel, data) {
     months: MONTHS,
     yms,
     regions: regions.map(({ demoBase, ...r }) => r),
-    missing: failures.map(({ code, kind, ym }) => `${code}/${kind}/${ym}`),
+    missing,
+    // 이번 달(신고 진행 중) 매매. 지역 데이터 파일에 들어 있지만 지표·차트에는 쓰지 않는다
+    partial: { ym: partialYm, missing: [...new Set(failures.filter((f) => f.ym === partialYm).map((f) => f.code))] },
   });
 
   // 금리·주택가격 전망 심리 (한국은행 ECOS). 키가 없거나 실패해도 실거래 배포는 그대로 진행
