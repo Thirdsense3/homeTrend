@@ -128,7 +128,36 @@ async function getRegion(code, months, brokerOnly) {
   const trades = brokerOnly ? raw.trades.filter((t) => t.kind !== '직거래') : raw.trades;
   const summary = A.regionSummary(raw.yms, trades, raw.rents);
   summary.indicators.candidate = hasMissing(code) ? null : A.candidateScore(summary.indicators, summary.series);
-  return { ...summary, apartments: A.apartmentList(trades) };
+  const partial = brokerOnly ? raw.partial.filter((t) => t.kind !== '직거래') : raw.partial;
+  return { ...summary, apartments: withPartial(A.apartmentList(trades), partial) };
+}
+// 단지 목록에 이번 달(신고 진행 중) 거래를 더한다: 거래 수와 최근 거래만. 평당가·시세·최고가는 지난달까지로 둔다.
+// 이번 달에만 거래가 있는 단지도 목록에 넣고 가격 칸은 비워 둔다
+function withPartial(list, partial) {
+  const by = new Map();
+  for (const t of A.markBulk(partial)) {
+    if (t.bulk) continue;
+    const k = A.aptKey(t);
+    if (!by.has(k)) by.set(k, []);
+    by.get(k).push(t);
+  }
+  const latest = (ts) => ts.reduce((a, b) => (b.date > a.date ? b : a));
+  const out = list.map((r) => {
+    const p = by.get(r.key);
+    if (!p) return r;
+    by.delete(r.key);
+    const last = latest(p);
+    return { ...r, partialCount: p.length, count12m: r.count12m + p.length, lastDate: last.date, lastPrice: last.price, lastArea: last.area, lastPartial: true };
+  });
+  for (const [key, p] of by) {
+    const last = latest(p);
+    out.push({
+      key, apt: last.apt, dong: last.dong, built: last.built, jibun: last.jibun, count: p.length, count12m: p.length, partialCount: p.length,
+      mainArea: null, recentPrice: null, peakPrice: null, peakDate: null, fromPeak: null, ppy: null,
+      lastDate: last.date, lastPrice: last.price, lastArea: last.area, lastPartial: true, bulk: 0,
+    });
+  }
+  return out;
 }
 // partial: 이번 달(신고 진행 중) 거래. 시세·차트·지표에는 쓰지 않고 목록에서만 따로 표시한다
 async function getApt(code, key, months) {
@@ -136,6 +165,7 @@ async function getApt(code, key, months) {
   key = A.canonicalKey(code, key, state.complexes?.[code]);
   const both = A.markBulk([...trades, ...partial].filter((x) => A.aptKey(x) === key)).sort((a, b) => a.date.localeCompare(b.date));
   const t = both.filter((x) => !x.partial);
+  if (!t.length && both.length) throw new Error(`이번 달(신고 진행 중) 거래 ${both.length}건만 있는 단지예요. 시세·차트는 신고가 끝나는 다음 달부터 계산해요`);
   if (!t.length) throw new Error('해당 기간에 거래가 없는 단지입니다');
   if (t.every((x) => x.bulk)) throw new Error('해당 기간에 일괄 거래(통매각)만 있어 시세를 계산할 수 없는 단지입니다');
   const r = rents.filter((x) => A.aptKey(x) === key).sort((a, b) => a.date.localeCompare(b.date));
@@ -1392,13 +1422,13 @@ const APT_COLS = [
   ['apt', '단지', (r) => r.apt, (r) => `${esc(r.apt)}${r.bulk ? ` <span class="tag" title="같은 날 직거래 ${BULK_HINT}">일괄 ${r.bulk}건 제외</span>` : ''}`],
   ['dong', '동', (r) => r.dong, (r) => esc(r.dong)],
   ['built', '준공', (r) => r.built, (r) => r.built || '–'],
-  ['count12m', '최근 1년 거래', (r) => r.count12m, (r) => `${r.count12m}건`],
-  ['mainArea', '주력 평형', (r) => r.mainArea, (r) => `${r.mainArea}㎡`],
+  ['count12m', '최근 1년 거래', (r) => r.count12m, (r) => `${r.count12m}건${r.partialCount ? ` <span class="muted" title="${PARTIAL_HELP}">(이번 달 ${r.partialCount}건 포함)</span>` : ''}`],
+  ['mainArea', '주력 평형', (r) => r.mainArea, (r) => (r.mainArea ? `${r.mainArea}㎡` : '–')],
   ['ppy', '평당가', (r) => r.ppy, (r) => fmtMan(r.ppy)],
   ['recentPrice', '최근 시세', (r) => r.recentPrice, (r) => fmtEok(r.recentPrice)],
-  ['peakPrice', '기간 내 최고가', (r) => r.peakPrice, (r) => `${fmtEok(r.peakPrice)} <span class="muted">${r.peakDate.slice(2, 7).replace('-', '.')}</span>`],
+  ['peakPrice', '기간 내 최고가', (r) => r.peakPrice, (r) => (r.peakPrice ? `${fmtEok(r.peakPrice)} <span class="muted">${r.peakDate.slice(2, 7).replace('-', '.')}</span>` : '–')],
   ['fromPeak', '최고가 대비', (r) => r.fromPeak, (r) => delta(r.fromPeak)],
-  ['lastDate', '최근 거래일', (r) => r.lastDate, (r) => r.lastDate.slice(2).replace(/-/g, '.')],
+  ['lastDate', '최근 거래일', (r) => r.lastDate, (r) => `${r.lastDate.slice(2).replace(/-/g, '.')}${r.lastPartial ? ` ${partialTag}` : ''}`],
 ];
 
 function monthsSeg(cur, opts) {
@@ -1500,6 +1530,7 @@ async function viewRegion(code, id) {
     <div id="rebCards"></div>
     <div class="card">
       <div class="row" style="margin-bottom:8px"><h2 style="margin:0">단지별 시세</h2><span class="spacer"></span><span id="aptSort"></span><input type="search" id="q" placeholder="단지명·동 검색"></div>
+      <p class="muted" id="aptPartialNote" style="font-size:12px;margin:0 0 8px" hidden>최근 1년 거래·최근 거래일은 이번 달(신고 진행 중) 거래를 포함해요. 평당가·최근 시세·최고가는 신고가 끝난 지난달까지의 거래로 계산해요.</p>
       <div class="table-wrap mcards"><table><thead></thead><tbody></tbody></table></div>
     </div>`;
   bindMonths(`region.${code}`);
@@ -1547,6 +1578,7 @@ async function viewRegion(code, id) {
     document.getElementById('aptSort').innerHTML = sortSelect(cols, 'apts', state.sort.apts);
     tbody.innerHTML = sortRows(rows, cols, state.sort.apts).slice(0, 300)
       .map((r) => `<tr class="link" data-href="#/a/${code}/${encodeURIComponent(r.key)}">${cells(cols, r, (i) => i < 2)}</tr>`).join('');
+    document.getElementById('aptPartialNote').hidden = !d.apartments.some((r) => r.partialCount);
     bindSort(app, 'apts', render);
   };
   q.addEventListener('input', render);
