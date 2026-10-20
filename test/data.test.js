@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert');
-const { monthRange } = require('../lib/data');
+const { monthRange, currentYm } = require('../lib/data');
 const { kstNow } = require('../lib/kst');
 const { ttl } = require('../lib/molit');
 
@@ -11,6 +11,12 @@ test('monthRange: 지난달부터 거꾸로, 연도 넘김', () => {
 test('monthRange: UTC로는 전월 말이어도 KST 1일이면 새 달 기준', () => {
   // 2026-09-30 19:00 UTC = 2026-10-01 04:00 KST (Actions 일일 빌드 시각)
   assert.deepStrictEqual(monthRange(1, kstNow(Date.UTC(2026, 8, 30, 19))), ['202609']);
+});
+
+test('currentYm: KST 기준 이번 달 (조회 기간 밖, 신고 진행 중)', () => {
+  const now = kstNow(Date.UTC(2026, 8, 30, 19)); // 2026-10-01 04:00 KST
+  assert.strictEqual(currentYm(now), '202610');
+  assert.strictEqual(monthRange(1, now)[0], '202609');
 });
 
 test('캐시 TTL: 최근 2개월 12시간, 1년 이내 매매 1주일, 그 외 영구', () => {
