@@ -22,7 +22,7 @@ test('이력 시작: 지금 있는 거래는 새 거래가 아니다', () => {
   const r = run(null, [{ ym: '202608', rows: [t('2026-08-03', 100000)] }], 101);
   assert.equal(r.added.length, 0);
   assert.deepEqual(r.ledger.months['202608'][ledger.tradeKey(t('2026-08-03', 100000))], [0]);
-  assert.equal(r.ledger.last, '202608');
+  assert.equal(r.ledger.end, '202608');
 });
 
 test('늦은 신고·같은 계약일 복수 거래·중복 수집', () => {
@@ -74,17 +74,33 @@ test('조회 기간 이동: 빠진 달은 삭제가 아니고, 새로 들어온 
   assert.deepEqual(r.added.map((x) => x.date), ['2026-09-02']);
   assert.deepEqual(r.opened, ['202609']);
   assert.equal(r.ledger.months['202607'], undefined);
-  assert.equal(r.ledger.last, '202609');
+  assert.equal(r.ledger.end, '202609');
 });
 
 test('이력 시작 때 수집에 실패한 달은 나중에 받아도 새 거래로 표시하지 않는다', () => {
   const l1 = run(null, [{ ym: '202607', rows: [], ok: false }, { ym: '202608', rows: [t('2026-08-03', 100000)] }], 101).ledger;
   const r = run(l1, [{ ym: '202607', rows: [t('2026-07-03', 100000)] }, { ym: '202608', rows: [t('2026-08-03', 100000)] }], 201);
   assert.equal(r.added.length, 0);
-  // 새로 들어온 달이 첫 빌드에서 실패하면 last가 그대로라 다음 성공 때 새로 들어온 달로 본다
+  // 새로 들어온 달이 첫 빌드에서 실패하면 pending에 두고, 다음 성공 때 새로 들어온 달로 본다
   const f = run(r.ledger, [{ ym: '202608', rows: [t('2026-08-03', 100000)] }, { ym: '202609', rows: [], ok: false }], 301);
-  assert.equal(f.ledger.last, '202608');
+  assert.deepEqual(f.ledger.pending, ['202609']);
   assert.equal(run(f.ledger, [{ ym: '202608', rows: [t('2026-08-03', 100000)] }, { ym: '202609', rows: [t('2026-09-01', 1)] }], 401).added.length, 1);
+});
+
+test('이력 시작 빌드에서 지역 수집이 모두 실패해도 다음 빌드에 조회 기간 전체가 새 거래로 뜨지 않는다', () => {
+  const l1 = run(null, [{ ym: '202608', rows: [], ok: false }, { ym: '202609', rows: [], ok: false }], 101).ledger;
+  assert.equal(l1.end, '202609');
+  const r = run(l1, [{ ym: '202608', rows: [t('2026-08-03', 100000)] }, { ym: '202609', rows: [t('2026-09-03', 100000)] }], 201);
+  assert.equal(r.added.length, 0);
+  assert.deepEqual(r.opened, []);
+});
+
+test('이력 키는 원본 단지명: 대표 단지 별칭이 바뀌어도 삭제·추가로 기록하지 않는다', () => {
+  const before = t('2026-08-03', 100000, { apt: '한진(609-1)' });
+  const l1 = run(null, [{ ym: '202608', rows: [before] }], 101).ledger;
+  const after = { ...before, apt: '한신한진', sourceApt: '한진(609-1)' };
+  const r = run(l1, [{ ym: '202608', rows: [after] }], 201);
+  assert.equal(r.added.length + r.removed.length, 0);
 });
 
 test('이력 파일: 없으면 null, 깨져 있으면 멈춘다', () => {
@@ -174,15 +190,20 @@ test('삭제된 거래와 변화 id는 같은 입력이면 같다', () => {
 });
 
 test('지역: 국면 변화, 급등은 조건이 새로 충족될 때만', () => {
-  const ind = (id, chg3m = 0) => ({ phase: { id }, chg3m, currentYm: '202609' });
+  const ind = (id, chg3m = 0, currentYm = '202609') => ({ phase: { id }, chg3m, currentYm });
   const go = (prev, i, extra = {}) => ch.regionChanges({ code: '11110', prev, ind: i, weekly: null, complete: true, no: 301, today: TODAY, ...extra });
   assert.deepEqual(go(null, ind(1)).items, []);
-  const p = go({ phase: 2, surge: false }, ind(1, 0.035));
+  // 같은 기준월 안에서 국면이 바뀌면 값만 갱신하고 변화로 내지 않는다 (경계값 근처 깜빡임)
+  const same = go({ phase: 2, phaseYm: '202609', surge: false }, ind(1));
+  assert.deepEqual(same.items, []);
+  assert.deepEqual(same.state, { phase: 1, phaseYm: '202609', surge: false });
+  // 기준월이 바뀌면 지난 기준월의 마지막 국면과 비교
+  const p = go({ phase: 2, phaseYm: '202608', surge: false }, ind(1, 0.035));
   assert.deepEqual(p.items.map((x) => x.type), ['phase', 'regionSurge']);
-  assert.deepEqual(p.state, { phase: 1, surge: true });
+  assert.deepEqual(p.state, { phase: 1, phaseYm: '202609', surge: true });
   assert.deepEqual(go(p.state, ind(1, 0.04)).items, []); // 계속 충족 중
   // 수집 실패: 판정하지 않고 상태 유지
-  assert.deepEqual(go({ phase: 2, surge: false }, ind(1, 0.05), { complete: false }), { items: [], state: { phase: 2, surge: false } });
+  assert.deepEqual(go({ phase: 2, phaseYm: '202608', surge: false }, ind(1, 0.05), { complete: false }), { items: [], state: { phase: 2, phaseYm: '202608', surge: false } });
   // 주간지수 2주 연속 +0.3%
   const weekly = { dates: ['a', 'b', 'c'], sale: [100, 100.31, 100.62] };
   assert.equal(go({ phase: 1, surge: false }, ind(1), { weekly }).items[0].type, 'regionSurge');
@@ -199,6 +220,19 @@ test('피드: 같은 날 여러 빌드는 모으고, 날짜가 바뀌면 새로 
   assert.equal(b.regions[11110].added, 3);
   const c = ch.mergeFeed(b, { today: '2026-10-19', no: 401, items: [], regions: {} });
   assert.deepEqual(c, { date: '2026-10-19', builds: [401], items: [], regions: {} });
+});
+
+test('피드: 지역마다 눈에 띄는 거래는 모두, 나머지는 최근 계약 30건만, 일괄 거래는 뺀다', () => {
+  const items = Array.from({ length: 40 }, (_, i) => ({ id: `n${i}`, type: 'new', code: '11110', date: `2026-09-${String(i % 28 + 1).padStart(2, '0')}`, price: i }));
+  items.push({ id: 'h', type: 'new', code: '11110', date: '2026-01-01', price: 1, flags: ['high'] }, { id: 'b', type: 'new', code: '11110', date: '2026-09-30', price: 1, bulk: 1 }, { id: 'd', type: 'del', code: '11110' });
+  const f = ch.mergeFeed(null, { today: TODAY, no: 301, items, regions: {} });
+  assert.equal(f.items.filter((x) => x.type === 'new' && !x.flags).length, ch.FEED_PER_REGION);
+  assert.ok(f.items.some((x) => x.id === 'h') && f.items.some((x) => x.id === 'd') && !f.items.some((x) => x.id === 'b'));
+  assert.ok(!f.items.some((x) => 'drop' in x));
+});
+
+test('빌드 날짜 표는 최근 90일만', () => {
+  assert.deepEqual(ch.pruneBuilds({ 101: '2026-07-01', 201: '2026-10-01' }, TODAY), { 201: '2026-10-01' });
 });
 
 test('최근 30일 목록: 삭제·급등·국면만, 30일 지나면 빠지고 같은 id는 한 번', () => {

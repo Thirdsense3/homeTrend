@@ -87,14 +87,15 @@ function write(rel, data) {
     if (obs) {
       // 신고가·급등·국면처럼 여러 달을 보는 변화는 이 지역 매매 수집이 모두 성공했을 때만 확정한다
       const complete = tradeMonths.every((m) => m.ok);
-      items.push(...ch.tradeChanges({ code: r.code, trades, added: obs.added, removed: obs.removed, no, today, complete, recent }));
+      const tradeItems = ch.tradeChanges({ code: r.code, trades, added: obs.added, removed: obs.removed, no, today, complete, recent });
+      items.push(...tradeItems);
       const reg = ch.regionChanges({ code: r.code, prev, ind: indicators, weekly: reb?.regions?.[r.code]?.weekly, complete, no, today, recent });
       items.push(...reg.items);
-      const n = obs.added.length + (prev?.lastAdded?.d === today && obs.added.length ? prev.lastAdded.n : 0);
-      const lastAdded = obs.added.length ? { d: today, n } : prev?.lastAdded || null;
+      const added = tradeItems.filter((x) => x.type === 'new' && !x.bulk).length; // 일괄 거래 제외
+      const lastAdded = added ? { d: today, n: added + (prev?.lastAdded?.d === today ? prev.lastAdded.n : 0) } : prev?.lastAdded || null;
       ledger.write(r.code, { ...obs.ledger, ...reg.state, lastAdded });
       regionStats[r.code] = {
-        added: obs.added.length, removed: obs.removed.length, failed: !complete, opened: obs.opened,
+        added, removed: obs.removed.length, failed: !complete, opened: obs.opened,
         lastAdded, lastTrade: trades.reduce((m, t) => (t.date > m ? t.date : m), ''),
       };
       if (prev) continued = true;
@@ -110,7 +111,7 @@ function write(rel, data) {
     // lastAdded·lastTrade는 이번 빌드 기준 값으로 덮는다
     for (const [code, s] of Object.entries(regionStats)) Object.assign(feed.regions[code], { lastAdded: s.lastAdded, lastTrade: s.lastTrade });
     const recentNext = ch.updateRecent(recent, items, today);
-    builds = { ...ledger.readState('builds'), [no]: today };
+    builds = ch.pruneBuilds({ ...ledger.readState('builds'), [no]: today }, today);
     ledger.writeState('feed', feed);
     ledger.writeState('recent', recentNext);
     ledger.writeState('builds', builds);

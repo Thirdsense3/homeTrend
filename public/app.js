@@ -885,6 +885,7 @@ function highlight(text, q) {
 
 // ---------- 개요: 지역별 비교 ----------
 const hasMissing = (code) => (state.meta?.missing || []).some((m) => m.startsWith(`${code}/`));
+const tradeMissing = (code) => (state.meta?.missing || []).some((m) => m.startsWith(`${code}/trade/`));
 const candidateCell = (r) => {
   const c = hasMissing(r.code) ? null : r.ind?.candidate;
   return c ? `<span title="${esc(c.factors.map((f) => `${f.name} ${f.points}점`).join(' · '))}">${c.score}점</span>` : '<span class="muted">–</span>';
@@ -1036,7 +1037,10 @@ async function renderFeed(group, id) {
   const dels = items.filter((x) => x.type === 'del');
   const events = items.filter((x) => ['surge', 'regionSurge', 'phase'].includes(x.type));
   const regs = [...codes].map((code) => ({ code, ...c.regions[code] }));
-  const head = `<div class="row"><h2 style="margin:0">오늘 들어온 거래 ${tip(FEED_HELP)}</h2><span class="spacer"></span><span class="muted" style="font-size:12px">${md(c.date)} 갱신</span></div>`;
+  // 빌드·배포가 밀려 마지막 갱신이 오늘(KST)이 아니면 그 날짜로 부른다
+  const isToday = c.date === new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const day = isToday ? '오늘은' : `${md(c.date)}에는`;
+  const head = `<div class="row"><h2 style="margin:0">${isToday ? '오늘' : md(c.date)} 들어온 거래 ${tip(FEED_HELP)}</h2><span class="spacer"></span><span class="muted" style="font-size:12px">${md(c.date)} 갱신</span></div>`;
   if (c.status === 'bootstrap' && !items.length) {
     el.innerHTML = `<div class="card feed">${head}<p class="muted">거래 이력을 쌓기 시작했어요. 다음 데이터 갱신부터 새로 확인된 거래를 보여 드려요.</p></div>`;
     return;
@@ -1046,36 +1050,36 @@ async function renderFeed(group, id) {
   if (failed.length) notes.push(`${failed.length <= 3 ? failed.map((r) => esc(regionShort(r.code))).join('·') : `${failed.length}개 지역`}은 일부 달을 받지 못해 그 달은 비교하지 않았어요`);
   const opened = [...new Set(regs.flatMap((r) => r.opened || []))];
   if (opened.length) notes.push(`${opened.map((ym) => `${+ym.slice(4)}월`).join('·')} 거래가 처음 반영돼 한꺼번에 들어왔어요`);
-  // 관심단지 중 아직 확인하지 않은 새 거래 (관심단지 화면과 같은 기준: 마지막 확인 빌드 뒤)
+  // 관심단지 중 아직 확인하지 않은 새 거래 (관심단지 화면과 같은 기준: 마지막 확인 빌드 뒤).
+  // 피드 파일은 지역마다 일부 거래만 담으므로 건수 대신 있는지만 알린다
   const watched = watch.list();
-  const mineNew = news.filter((x) => watched.some((w) => w.code === x.code && w.key === x.key && x.b > (w.checked ?? state.meta.buildNo))).length;
-  const watchLine = mineNew ? `<p><a href="#/watch">관심단지에 새로 확인된 거래 ${mineNew}건 →</a></p>` : '';
+  const mineNew = news.some((x) => watched.some((w) => w.code === x.code && w.key === x.key && x.b > (w.checked ?? state.meta.buildNo)));
+  const watchLine = mineNew ? `<p><a href="#/watch">관심단지에 새로 확인된 거래가 있어요 →</a></p>` : '';
   const foot = notes.length ? `<p class="muted" style="font-size:12px;margin:8px 0 0">${notes.join(' · ')}</p>` : '';
-  if (!news.length && !dels.length && !events.length) {
+  // 건수는 지역별 집계로 센다 (피드 파일의 거래 목록은 지역마다 눈에 띄는 거래와 최근 계약 일부만 담는다)
+  const total = regs.reduce((n, r) => n + (r.added || 0), 0);
+  if (!total && !dels.length && !events.length) {
     // 변화가 없으면 마지막으로 새 거래가 확인된 날과 가장 최근 계약일을 보여 준다 (지역 흐름은 아래 요약 문장)
     const lastDay = regs.map((r) => r.lastAdded?.d).filter(Boolean).sort().pop();
     const lastN = regs.filter((r) => r.lastAdded?.d === lastDay).reduce((n, r) => n + r.lastAdded.n, 0);
     const lastTrade = regs.map((r) => r.lastTrade).filter(Boolean).sort().pop();
-    el.innerHTML = `<div class="card feed">${head}<p class="muted">오늘은 ${esc(group)}에서 새로 확인된 거래가 없어요.${lastDay ? ` 마지막으로 새 거래가 확인된 날은 ${md(lastDay)}(${lastN.toLocaleString()}건)이고,` : ''}${lastTrade ? ` 가장 최근 계약일은 ${md(lastTrade)}예요.` : ''}</p>${watchLine}${foot}</div>`;
+    el.innerHTML = `<div class="card feed">${head}<p class="muted">${day} ${esc(group)}에서 새로 확인된 거래가 없어요.${lastDay ? ` 마지막으로 새 거래가 확인된 날은 ${md(lastDay)}(${lastN.toLocaleString()}건)이고,` : ''}${lastTrade ? ` 가장 최근 계약일은 ${md(lastTrade)}예요.` : ''}</p>${watchLine}${foot}</div>`;
     return;
   }
   const highs = news.filter((x) => x.flags?.includes('high')).length;
-  // 지역별 건수도 위 합계와 같은 기준(일괄 거래 제외)으로 센다
-  const byRegion = new Map();
-  news.forEach((x) => byRegion.set(x.code, (byRegion.get(x.code) || 0) + 1));
-  const top = [...byRegion].map(([code, added]) => ({ code, added })).sort((a, b) => b.added - a.added);
+  const top = regs.filter((r) => r.added).sort((a, b) => b.added - a.added);
   // 눈에 띄는 거래(급등·신고가·높은 가격) 먼저, 그다음 최근 계약 순
   const rank = (x) => (x.flags?.includes('surge') ? 3 : 0) + (x.flags?.includes('high') ? 2 : 0) + (x.flags?.includes('highPrice') ? 1 : 0);
   const sorted = news.slice().sort((a, b) => rank(b) - rank(a) || b.date.localeCompare(a.date) || b.price - a.price);
   const row = (x) => `<li><span class="muted">${esc(regionShort(x.code))}</span> ${aptLink(x)} · ${tradeLine(x)}${flagTags(x)}</li>`;
   el.innerHTML = `<div class="card feed">${head}
-    <p>${esc(group)}에서 새로 확인된 매매 <b class="num">${news.length.toLocaleString()}건</b>${highs ? ` · <span class="up">신고가 ${highs}건</span>` : ''}${dels.length ? ` · 삭제 ${dels.length}건` : ''}</p>
+    <p>${esc(group)}에서 새로 확인된 매매 <b class="num">${total.toLocaleString()}건</b>${highs ? ` · <span class="up">신고가 ${highs}건</span>` : ''}${dels.length ? ` · 삭제 ${dels.length}건` : ''}</p>
     ${top.length ? `<p class="feed-regions">${top.slice(0, 10).map((r) => `<a href="#/r/${r.code}">${esc(regionShort(r.code))} <span class="num">${r.added}</span></a>`).join('')}${top.length > 10 ? `<span class="muted">외 ${top.length - 10}곳</span>` : ''}</p>` : ''}
     ${watchLine}
     ${events.length ? `<ul class="changes">${events.map((x) => `<li>${eventLine(x)}</li>`).join('')}</ul>${events.some((x) => x.type !== 'phase') ? `<p class="muted" style="font-size:12px;margin:4px 0 0">급등: ${SURGE_NOTE}</p>` : ''}` : ''}
     ${sorted.length ? `<ul class="changes">${sorted.slice(0, FEED_ROWS).map(row).join('')}</ul>` : ''}
-    ${sorted.length > FEED_ROWS || dels.length ? `<details><summary>${sorted.length > FEED_ROWS ? `전체 ${sorted.length.toLocaleString()}건` : ''}${sorted.length > FEED_ROWS && dels.length ? ' · ' : ''}${dels.length ? `삭제된 거래 ${dels.length}건` : ''}</summary>
-      ${sorted.length > FEED_ROWS ? `<ul class="changes">${sorted.slice(FEED_ROWS, 300).map(row).join('')}${sorted.length > 300 ? `<li class="muted">외 ${sorted.length - 300}건은 지역 화면에서 보세요</li>` : ''}</ul>` : ''}
+    ${sorted.length > FEED_ROWS || dels.length ? `<details><summary>${sorted.length > FEED_ROWS ? `거래 더 보기` : ''}${sorted.length > FEED_ROWS && dels.length ? ' · ' : ''}${dels.length ? `삭제된 거래 ${dels.length}건` : ''}</summary>
+      ${sorted.length > FEED_ROWS ? `<ul class="changes">${sorted.slice(FEED_ROWS).map(row).join('')}${total > sorted.length ? `<li class="muted">지역마다 최근 계약 일부만 보여요. 나머지 ${(total - sorted.length).toLocaleString()}건은 지역 화면에서 보세요</li>` : ''}</ul>` : ''}
       ${dels.length ? `<ul class="changes muted">${dels.slice(0, 100).map((x) => `<li>${esc(regionShort(x.code))} ${aptLink(x)} · <s>${tradeLine(x)}</s></li>`).join('')}</ul>` : ''}
     </details>` : ''}
     ${foot}
@@ -1834,27 +1838,48 @@ async function viewWatch(id) {
   const changed = []; // 새로 확인된 거래가 있는 단지의 거래 수 (측정: 개수만 보낸다)
   await Promise.all(list.map(async (w, i) => {
     const el = document.getElementById(`w${i}`);
+    const since = w.checked ?? no;
+    // 사라진 거래(해제·정정)와 급등은 최근 30일 변화 목록에서 찾는다. 남은 거래가 없는 단지도 삭제 내역은 보여 준다
+    const mine = (recent?.items || []).filter((x) => x.code === w.code && x.key === w.key && x.b > since);
+    const gone = mine.filter((x) => x.type === 'del').sort((a, b) => b.date.localeCompare(a.date));
+    const surge = mine.filter((x) => x.type === 'surge');
+    const goneLines = [
+      ...gone.slice(0, 2).map((x) => `<li class="muted"><s>${tradeLine(x)}</s> 삭제</li>`),
+      gone.length > 2 ? `<li class="muted">삭제 외 ${gone.length - 2}건</li>` : '',
+    ];
+    const checkedLine = no && buildDate(since) ? `마지막 확인 ${md(buildDate(since))}` : '';
+    let d;
     try {
-      const d = await getApt(w.code, w.key, 36);
+      d = await getApt(w.code, w.key, 36);
+    } catch (e) {
+      if (isStale(id)) return;
+      if (!gone.length) { el.querySelector(':scope > .muted').textContent = `오류: ${e.message}`; return; }
+      document.getElementById('checkAll')?.removeAttribute('hidden');
+      el.innerHTML = `
+        <div class="row"><b>${esc(w.name)}</b><span class="tag">삭제 ${gone.length}건</span><span class="spacer"></span><span class="muted">${esc(w.region)}</span></div>
+        <div class="muted" style="margin-top:8px">${esc(e.message)}</div>
+        <ul class="changes">${goneLines.join('')}</ul>
+        ${checkedLine ? `<div class="muted" style="font-size:12px;margin-top:6px">${checkedLine}</div>` : ''}`;
+      return;
+    }
+    try {
       if (isStale(id)) return;
       const main = d.areas[0];
       const tr = d.trades.filter((t) => !t.bulk && A.areaKey(t.area) === main.area);
       const recentPrice = median(tr.slice(-3).map((t) => t.price));
       const market = d.trades.filter((t) => !t.bulk);
       // 새로 확인된 거래: 마지막으로 확인한 빌드 뒤에 처음 확인된 거래. 확인 기록이 없으면 지금 빌드부터 센다
-      const since = w.checked ?? no;
       const isFresh = (t) => no && t.firstSeen > since;
       const fresh = market.filter(isFresh).sort((a, b) => b.date.localeCompare(a.date));
-      // 신고가: 같은 평형에서 확인 시점까지 본 거래의 최고가를 넘은 새 거래. 이전 거래가 없는 평형은 세지 않는다
+      // 신고가: 같은 평형에서 확인 시점까지 본 거래의 최고가를 넘은 새 거래. 이전 거래가 없는 평형은 세지 않는다.
+      // 이 지역 매매 수집에 실패한 달이 있으면 이전 최고가가 빠졌을 수 있어 판정하지 않는다 (빌드의 tradeChanges와 같은 기준)
+      const complete = !tradeMissing(w.code);
       const isHigh = (t) => {
+        if (!complete) return false;
         const prior = market.filter((o) => !isFresh(o) && A.areaKey(o.area) === A.areaKey(t.area)).map((o) => o.price);
         return prior.length && t.price > Math.max(...prior);
       };
       const high = fresh.filter(isHigh);
-      // 사라진 거래(해제·정정)와 급등은 최근 30일 변화 목록에서 찾는다
-      const mine = (recent?.items || []).filter((x) => x.code === w.code && x.key === w.key && x.b > since);
-      const gone = mine.filter((x) => x.type === 'del').sort((a, b) => b.date.localeCompare(a.date));
-      const surge = mine.filter((x) => x.type === 'surge');
       const badges = `${fresh.length ? `<span class="tag new">새로 확인 ${fresh.length}건</span>` : ''}${high.length ? `<span class="tag high">신고가 ${high.length}건</span>` : ''}${surge.length ? `<span class="tag high">급등</span>` : ''}${gone.length ? `<span class="tag">삭제 ${gone.length}건</span>` : ''}`;
       if (fresh.length) { el.dataset.fresh = fresh.length; changed.push(fresh.length); }
       if (fresh.length || gone.length) document.getElementById('checkAll')?.removeAttribute('hidden');
@@ -1862,8 +1887,8 @@ async function viewWatch(id) {
         ...fresh.slice(0, 3).map((t) => `<li>${tradeLine(t)}${isHigh(t) ? ' <span class="tag high">신고가</span>' : ''}${t.kind === '직거래' ? ' <span class="tag">직거래</span>' : ''}</li>`),
         fresh.length > 3 ? `<li class="muted">외 ${fresh.length - 3}건</li>` : '',
         ...surge.slice(0, 1).map((x) => `<li><span class="up">급등</span> ${x.area}㎡ · ${surgeBasis(x.basis)} <span class="muted">(${SURGE_NOTE})</span></li>`),
-        ...gone.slice(0, 2).map((x) => `<li class="muted"><s>${tradeLine(x)}</s> 삭제</li>`),
-        gone.length > 2 ? `<li class="muted">삭제 외 ${gone.length - 2}건</li>` : '',
+        ...goneLines,
+        fresh.length && !complete ? '<li class="muted">일부 달의 매매를 받지 못해 신고가는 판정하지 않았어요</li>' : '',
       ].filter(Boolean);
       const last = market[market.length - 1];
       if (i < CMP_MAX) cmp[i] = { name: w.name, series: main.series.map((r) => ({ ym: r.ym, v: r.ma == null ? null : r.ma / (Number(main.area) / PYEONG) })) };
@@ -1873,7 +1898,7 @@ async function viewWatch(id) {
         <div class="row" style="font-size:12px;margin-top:6px">최고가 대비 ${delta(recentPrice / main.maxPrice - 1)} · 전세가율 ${fmtPct(main.indicators.jeonseRatio, 0)}</div>
         <div style="margin-top:6px">${phaseChip(main.indicators.phase)}</div>
         ${lines.length ? `<ul class="changes">${lines.join('')}</ul>` : ''}
-        <div class="muted" style="font-size:12px;margin-top:6px">최근 계약 ${fmtDate(last.date)}${no && buildDate(since) ? ` · 마지막 확인 ${md(buildDate(since))}` : ''}${no && !lines.length ? ' · 새로 확인된 거래 없음' : ''}</div>`;
+        <div class="muted" style="font-size:12px;margin-top:6px">최근 계약 ${fmtDate(last.date)}${checkedLine ? ` · ${checkedLine}` : ''}${no && !lines.length ? ' · 새로 확인된 거래 없음' : ''}</div>`;
     } catch (e) {
       if (!isStale(id)) el.querySelector(':scope > .muted').textContent = `오류: ${e.message}`;
     }
