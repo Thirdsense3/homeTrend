@@ -2010,8 +2010,8 @@ async function viewWatch(id) {
     }
     try {
       if (isStale(id)) return;
-      // 관심 평형이 최근 3년 매매에 없으면(이번 달에만 있거나 오래전 거래만 있음) 주력 평형으로 요약한다
-      const picked = w.area && d.areas.find((a) => a.area === w.area && !a.partialOnly);
+      // 관심 평형이 최근 3년 매매에 없으면(전세만 있거나 이번 달에만 있거나 오래전 거래만 있음) 주력 평형으로 요약한다
+      const picked = w.area && d.areas.find((a) => a.area === w.area && !a.partialOnly && a.count > 0);
       const main = picked || d.areas[0];
       const tr = d.trades.filter((t) => !t.bulk && A.areaKey(t.area) === main.area);
       const recentPrice = median(tr.slice(-3).map((t) => t.price));
@@ -2042,7 +2042,9 @@ async function viewWatch(id) {
         fresh.length && !complete ? '<li class="muted">일부 달의 매매를 받지 못해 신고가는 판정하지 않았어요</li>' : '',
         otherFresh ? `<li class="muted">다른 평형에서 새로 확인 ${otherFresh}건</li>` : '',
       ].filter(Boolean);
-      const last = withCur.reduce((a, b) => (b.date > a.date ? b : a));
+      // 최근 계약도 요약한 평형 기준 (그 평형 거래가 모두 일괄 거래면 단지 전체)
+      const sameArea = withCur.filter((t) => A.areaKey(t.area) === main.area);
+      const last = (sameArea.length ? sameArea : withCur).reduce((a, b) => (b.date > a.date ? b : a));
       if (i < CMP_MAX) cmp[i] = { name: w.name, series: main.series.map((r) => ({ ym: r.ym, v: r.ma == null ? null : r.ma / (Number(main.area) / PYEONG) })) };
       el.innerHTML = `
         <div class="row"><b>${esc(w.name)}</b>${badges}<span class="spacer"></span><span class="muted">${esc(w.region)}</span></div>
@@ -2051,7 +2053,7 @@ async function viewWatch(id) {
         <div class="row" style="font-size:12px;margin-top:6px">최고가 대비 ${delta(recentPrice / main.maxPrice - 1)} · 전세가율 ${fmtPct(main.indicators.jeonseRatio, 0)}</div>
         <div style="margin-top:6px">${phaseChip(main.indicators.phase)}</div>
         ${lines.length ? `<ul class="changes">${lines.join('')}</ul>` : ''}
-        <div class="muted" style="font-size:12px;margin-top:6px">최근 계약 ${fmtDate(last.date)}${last.partial ? ' (이번 달 · 신고 진행 중)' : ''}${checkedLine ? ` · ${checkedLine}` : ''}${no && !lines.length ? ' · 새로 확인된 거래 없음' : ''}</div>`;
+        <div class="muted" style="font-size:12px;margin-top:6px">${sameArea.length ? `${main.area}㎡ ` : ''}최근 계약 ${fmtDate(last.date)}${last.partial ? ' (이번 달 · 신고 진행 중)' : ''}${checkedLine ? ` · ${checkedLine}` : ''}${no && !lines.length ? ' · 새로 확인된 거래 없음' : ''}</div>`;
     } catch (e) {
       if (!isStale(id)) el.querySelector(':scope > .muted').textContent = `오류: ${e.message}`;
     }
