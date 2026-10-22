@@ -340,3 +340,16 @@ ul.changes a { color: var(--series-1); text-decoration: none; }
 .feed-regions a:hover { background: var(--accent-wash); }
 /* 이번 달(신고 진행 중) 거래: 아직 늘어나는 잠정 값이라 점선 테두리 */
 .tag.partial { color: var(--ink-2); border-style: dashed; border-color: var(--axis); }
+
+/* 첫 방문 안내와 관심 평형 */
+.guide .steps { margin: 12px 0 0; padding: 0; list-style: none; counter-reset: step; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.guide .steps li { counter-increment: step; display: flex; flex-direction: column; gap: 4px; padding: 12px 14px; border: 1px solid var(--border); border-radius: 10px; font-size: 13px; color: var(--ink-2); }
+.guide .steps li b { color: var(--ink); font-size: 14px; }
+.guide .steps li b::before { content: counter(step); display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; margin-right: 6px; border-radius: 50%; background: var(--accent-wash); color: var(--series-1); font-size: 12px; }
+.guide .steps .btn { margin-top: 6px; font-size: 13px; padding: 4px 10px; }
+@media (max-width: 720px) { .guide .steps { grid-template-columns: minmax(0, 1fr); } }
+.watch-note { font-size: 13px; color: var(--ink-2); margin: -8px 0 8px; }
+.watch-note a { color: var(--series-1); }
+.watch-note .btn { font-size: 12px; padding: 2px 8px; margin: 0 4px; }
+.watch-note .star { cursor: default; padding: 0; font-size: 14px; }
+.seg button.saved::after { content: " ★"; color: #eda100; }

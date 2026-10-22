@@ -62,14 +62,15 @@ function main() {
 
   console.log(`최근 ${DAYS}일 (${from}~, KST)\n`);
 
-  console.log('날짜별: 방문 기기 · 모바일 · 관심단지 확인 · 검색 · 관심 추가 · 변화 확인(상세/있음)');
+  console.log('날짜별: 방문 기기 · 모바일 · 관심단지 확인 · 검색 · 관심 추가 · 평형 저장 · 안내 · 변화 확인(상세/있음)');
   for (const r of daily) {
-    console.log(`  ${r.sk}  ${String(r.devices).padStart(5)}  ${pct(r.mobile, r.devices)}  ${String(r.acts.view_watch || 0).padStart(4)}  ${String(r.acts.search || 0).padStart(4)}  ${String(r.acts.watch_add || 0).padStart(4)}  ${r.change.opened}/${r.change.available}`);
+    console.log(`  ${r.sk}  ${String(r.devices).padStart(5)}  ${pct(r.mobile, r.devices)}  ${String(r.acts.view_watch || 0).padStart(4)}  ${String(r.acts.search || 0).padStart(4)}  ${String(r.acts.watch_add || 0).padStart(4)}  ${String(r.acts.watch_area || 0).padStart(4)}  ${String(r.acts.guide || 0).padStart(4)}  ${r.change.opened}/${r.change.available}`);
   }
 
-  console.log('\n활성화 (첫 방문 24시간 안에 관심단지 저장 + 요약 확인), 첫 방문 날짜별: 신규 기기 · 활성화 · 모바일 · 데스크톱');
+  console.log('\n활성화 (첫 방문 24시간 안에 관심단지 저장 + 요약 확인), 첫 방문 날짜별: 신규 기기 · 활성화 · 모바일 · 데스크톱 · 평형까지(관심 평형 도입 뒤 신규 기기)');
   for (const r of activation) {
-    console.log(`  ${r.sk}  ${String(r.devices).padStart(5)}  ${pct(r.activated, r.devices)}  ${pct(r.mobile.activated, r.mobile.devices)}  ${pct(r.desktop.activated, r.desktop.devices)}`);
+    const area = r.area?.devices ? `${pct(r.area.activated, r.area.devices)} (${r.area.activated}/${r.area.devices})` : '   –';
+    console.log(`  ${r.sk}  ${String(r.devices).padStart(5)}  ${pct(r.activated, r.devices)}  ${pct(r.mobile.activated, r.mobile.devices)}  ${pct(r.desktop.activated, r.desktop.devices)}  ${area}`);
   }
 
   console.log(`\n핵심 재방문 (활성화 후 7~13일 / 28~34일에 관심단지 변화 확인), 활성화 날짜별 (${retFrom}~: 4주 관찰이 끝난 코호트까지)`);

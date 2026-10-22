@@ -54,13 +54,18 @@ async function record({ device, firstVisit, mobile, events }, now) {
 
   let accepted = 0;
   let activatedAt = summary?.activatedAt;
+  let activatedAreaAt = summary?.activatedAreaAt;
   for (const e of events) {
     // 기기 요약: 첫 방문은 처음 값을 유지, 만료(TTL)는 마지막 활동 기준으로 매번 연장
     const set = ['firstSeen = if_not_exists(firstSeen, :fv)', 'lastSeen = :now', 'mobile = :m', 'v = :v', 'expiresAt = :exp'];
+    // firstV: 기기 요약을 처음 만들 때의 측정 버전. 새 지표의 분모를 그 지표가 생긴 뒤 처음 온 기기로 한정할 때 쓴다
+    // (요약이 이미 있는 기기에는 쓰지 않는다. 버전 2 전부터 있던 기기는 firstV가 없다)
+    if (!summary) set.push('firstV = if_not_exists(firstV, :v)');
     const add = [];
     const vals = { ':fv': firstVisit, ':now': nowIso, ':m': mobile, ':v': VERSION, ':exp': ttl(now) };
     if (e.props.n !== undefined && /^(watch_add|watch_remove|view_watch)$/.test(e.type)) { set.push('watchCount = :n'); vals[':n'] = e.props.n; }
     if (e.type === 'watch_add') set.push('firstWatchAddAt = if_not_exists(firstWatchAddAt, :now)');
+    if ((e.type === 'watch_add' && e.props.a === 1) || e.type === 'watch_area') set.push('firstWatchAreaAt = if_not_exists(firstWatchAreaAt, :now)');
     if (e.type === 'watch_change_available' && e.props.t > 0) { set.push('hadChange = :t'); vals[':t'] = true; }
     const cd = CORE.has(e.type) ? coreDay(activatedAt, now) : null;
     if (cd !== null) { add.push('coreDays :cd'); vals[':cd'] = new Set([cd]); }
@@ -92,22 +97,30 @@ async function record({ device, firstVisit, mobile, events }, now) {
       }
       throw err;
     }
-    // 활성화: 첫 방문 후 24시간 안에 관심단지를 저장하고, 그 뒤 관심단지 요약을 확인
-    if (e.type === 'view_watch' && !activatedAt) {
-      try {
-        await db.send(new UpdateCommand({
-          TableName: TABLE, Key: { pk, sk: 's' },
-          UpdateExpression: 'SET activatedAt = :now',
-          ConditionExpression: 'attribute_not_exists(activatedAt) AND attribute_exists(firstWatchAddAt) AND firstSeen >= :cutoff',
-          ExpressionAttributeValues: { ':now': nowIso, ':cutoff': new Date(now - ACTIVATION_WINDOW).toISOString() },
-        }));
-        activatedAt = nowIso;
-      } catch (err) {
-        if (err.name !== 'ConditionalCheckFailedException') throw err;
-      }
+    // 활성화: 첫 방문 후 24시간 안에 관심단지를 저장하고, 그 뒤 관심단지 요약을 확인.
+    // 평형까지 저장한 활성화(activatedAreaAt)는 같은 조건에 관심 평형 저장을 더한 별도 지표다
+    if (e.type === 'view_watch') {
+      if (!activatedAt && await activate(pk, 'activatedAt', 'firstWatchAddAt', now)) activatedAt = nowIso;
+      if (!activatedAreaAt && await activate(pk, 'activatedAreaAt', 'firstWatchAreaAt', now)) activatedAreaAt = nowIso;
     }
   }
   return res(200, { accepted });
+}
+
+// 첫 방문 후 24시간 안이고 need(저장 시각)가 있으면 field에 지금 시각을 한 번만 쓴다
+async function activate(pk, field, need, now) {
+  try {
+    await db.send(new UpdateCommand({
+      TableName: TABLE, Key: { pk, sk: 's' },
+      UpdateExpression: `SET ${field} = :now`,
+      ConditionExpression: `attribute_not_exists(${field}) AND attribute_exists(${need}) AND firstSeen >= :cutoff`,
+      ExpressionAttributeValues: { ':now': new Date(now).toISOString(), ':cutoff': new Date(now - ACTIVATION_WINDOW).toISOString() },
+    }));
+    return true;
+  } catch (err) {
+    if (err.name !== 'ConditionalCheckFailedException') throw err;
+    return false;
+  }
 }
 
 async function removeDevice(id) {

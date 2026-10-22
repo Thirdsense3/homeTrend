@@ -6,7 +6,10 @@
 //   pk dev#<기기>  sk s               기기 요약(첫 방문·활성화·재방문 날짜). 마지막 활동 기준 90일 뒤 삭제
 //   pk agg#<표>    sk <KST 날짜>      매일 집계. 기기를 식별할 수 없는 숫자만 있고 장기 보관
 
-export const VERSION = 1; // 측정 정의 버전. 이벤트·지표 정의를 바꾸면 올리고 집계 행에도 남긴다
+// 측정 정의 버전. 이벤트·지표 정의를 바꾸면 올리고 집계 행에도 남긴다
+// 2: 관심 평형 저장(watch_add a, watch_area)과 첫 방문 안내(guide), 평형까지 저장한 활성화
+export const VERSION = 2;
+export const AREA_VERSION = 2; // 이 버전부터 첫 방문한 기기만 '평형까지 저장한 활성화'의 분모에 넣는다
 export const DAY = 24 * 60 * 60 * 1000;
 export const RAW_TTL_DAYS = 90;
 export const MAX_EVENTS = 30; // 요청 하나에 담는 이벤트 수
@@ -31,8 +34,10 @@ export const EVENTS = {
   view_watch: { n: int(1000) }, // 관심단지 요약 확인. n: 관심단지 수
   view_privacy: {},
   search: { k: oneOf('apt', 'region') }, // 검색 결과 선택. 무엇을 골랐는지 종류만
-  watch_add: { n: int(1000) },
+  watch_add: { n: int(1000), a: oneOf(0, 1) }, // a: 관심 평형까지 골라 저장했는지 (어떤 평형인지는 받지 않는다)
   watch_remove: { n: int(1000) },
+  watch_area: {}, // 저장한 단지의 관심 평형을 저장·변경
+  guide: { k: oneOf('show', 'search', 'close') }, // 첫 방문 안내: 보임, 검색 시작, 닫음
   watch_change_available: { b: buildId, c: int(1000), t: int(100000) }, // 관심단지 화면에 새 거래가 있었음. b: 데이터 빌드, c: 단지 수, t: 거래 수
   watch_change_open: { b: buildId, t: int(100000) }, // 새 거래가 있는 단지를 눌러 상세 확인
 };
@@ -118,10 +123,15 @@ export function aggregate(items, now = Date.now()) {
     // 활성화: 첫 방문 후 24시간이 지난 기기만
     const fd = kstDate(Date.parse(s.firstSeen));
     if (fd >= from && Date.parse(s.firstSeen) + ACTIVATION_WINDOW <= now) {
-      const r = row('activation', fd, () => ({ devices: 0, activated: 0, mobile: { devices: 0, activated: 0 }, desktop: { devices: 0, activated: 0 } }));
+      const r = row('activation', fd, () => ({ devices: 0, activated: 0, mobile: { devices: 0, activated: 0 }, desktop: { devices: 0, activated: 0 }, area: { devices: 0, activated: 0 } }));
       for (const t of [r, r[s.mobile ? 'mobile' : 'desktop']]) {
         t.devices++;
         if (s.activatedAt) t.activated++;
+      }
+      // 평형까지 저장하고 요약을 확인한 기기. 관심 평형 저장이 생긴 뒤(firstV) 처음 온 기기만 분모에 넣어 기존 기준선과 따로 본다
+      if ((s.firstV || 1) >= AREA_VERSION) {
+        r.area.devices++;
+        if (s.activatedAreaAt) r.area.activated++;
       }
     }
     // 핵심 재방문: 활성화 날짜별, 구간이 끝난 기기만
