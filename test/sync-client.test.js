@@ -32,7 +32,9 @@ async function server() {
   const S = await import('../infra/functions/sync/sync.mjs');
   const db = new Map();
   const sizes = [];
+  const hooks = []; // 요청을 처리하기 전에 한 번씩 부른다 (요청 중 다른 기기·이 기기 변경 흉내)
   const fetch = async (url, { body }) => {
+    await hooks.shift()?.();
     const op = url.split('/').pop();
     const reply = (status, j) => ({ ok: status < 300, status, statusText: String(status), json: async () => j });
     try {
@@ -49,7 +51,7 @@ async function server() {
       return reply(e.status || 500, { error: e.message });
     }
   };
-  return { S, db, sizes, fetch };
+  return { S, db, sizes, hooks, fetch };
 }
 
 const likes = (from, n) => Array.from({ length: n }, (_, i) => String(from + i));
@@ -105,4 +107,53 @@ test('오래된 기기: 나눠 보내야 할 만큼 변경이 많아도 남은 �
   assert.equal(b.sync.held().changes.length, 150);
   assert.deepEqual([...b.regionLikes.list()], ['11110']); // 서버 목록을 먼저 받고, 확인 전에는 보내지 않음
   assert.deepEqual(live(srv.db.get(code)), ['r:11110']);
+});
+
+const apt = (i, area) => ({ code: '11110', key: `동|단지${String(i).padStart(3, '0')}`, name: `단지${String(i).padStart(3, '0')}`, area });
+const wid = (i) => `w:11110:동|단지${String(i).padStart(3, '0')}`;
+// 다른 기기의 변경: 서버에 직접 적용
+const otherDevice = (srv, id, v) => {
+  const [code] = srv.db.keys();
+  const doc = srv.db.get(code);
+  srv.db.set(code, srv.S.apply(doc, [{ id, v, from: doc.items[id]?.r || 0 }]).doc);
+};
+
+test('나눠 보낼 때 남은 묶음도 원래 기준 리비전으로 보내 다른 기기의 변경을 덮어쓰지 않는다', async () => {
+  const srv = await server();
+  const b = browser(srv.fetch);
+  b.watch.save(Array.from({ length: 101 }, (_, i) => apt(i, '84')), true);
+  await b.sync.create();
+  otherDevice(srv, wid(100), { name: '단지100', area: '120' });
+  b.watch.save(Array.from({ length: 101 }, (_, i) => apt(i, '60')), true);
+  await b.sync.run();
+  await settle(b);
+  const [code] = srv.db.keys();
+  assert.equal(srv.db.get(code).items[wid(100)].v.area, '120');
+  assert.equal(srv.db.get(code).items[wid(0)].v.area, '60');
+  assert.equal(b.sync.held()?.reason, 'conflict');
+  assert.deepEqual(JSON.parse(JSON.stringify(b.sync.held().changes.map((x) => [x.id, x.v.area]))), [[wid(100), '60']]);
+  assert.equal(b.watch.list().find((w) => w.name === '단지100').area, '120'); // 서버 값을 보여 줌
+  assert.equal(b.sync.pending(b.sync.conf()).length, 0);
+  // 다시 적용하면 지금 서버 리비전으로 보내 적용된다
+  b.sync.applyHeld();
+  await settle(b);
+  assert.equal(srv.db.get(code).items[wid(100)].v.area, '60');
+});
+
+test('요청 중에 이 기기에서 바꾼 항목도 원래 기준으로 보내 충돌을 판정한다', async () => {
+  const srv = await server();
+  const b = browser(srv.fetch);
+  b.watch.save([apt(1, '84'), apt(2, '84')], true);
+  await b.sync.create();
+  otherDevice(srv, wid(2), { name: '단지002', area: '120' }); // 다른 기기가 먼저 바꿈
+  b.watch.save([apt(1, '60'), apt(2, '84')], true);
+  srv.hooks.push(() => { b.watch.setArea('11110', '동|단지002', '59'); }); // 첫 요청이 오가는 동안 이 기기에서도 바꿈
+  await b.sync.run();
+  await settle(b);
+  await b.sync.run(); // 요청 중 바꾼 값은 저장 뒤 잠시 모았다 보낸다
+  await settle(b);
+  const [code] = srv.db.keys();
+  assert.equal(srv.db.get(code).items[wid(1)].v.area, '60');
+  assert.equal(srv.db.get(code).items[wid(2)].v.area, '120');
+  assert.deepEqual(JSON.parse(JSON.stringify(b.sync.held()?.changes.map((x) => [x.id, x.v.area]))), [[wid(2), '59']]);
 });

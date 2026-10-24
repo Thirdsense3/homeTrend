@@ -418,25 +418,33 @@ const sync = {
     const byId = new Map(changes.map((x) => [x.id, x]));
     // 오래된 기기: 아직 보내지 않은 변경까지 모두 확인을 받는다 (다음 묶음이 확인 없이 적용되지 않게)
     const unsent = j.stale ? new Set() : new Set(all.filter((x) => !byId.has(x.id)).map((x) => x.id));
+    const conflicts = new Set(j.stale ? [] : (j.conflicts || []).map((x) => x.id).filter((id) => byId.has(id)));
     if (j.stale) this.hold('stale', all, c);
-    else if (j.conflicts?.length) {
-      this.hold('conflict', j.conflicts.map((x) => byId.get(x.id)).filter(Boolean), c);
+    else if (conflicts.size) {
+      // 보내는 동안 또 바꿨으면 그 값을 기다리게 한다
+      const now = this.local();
+      this.hold('conflict', [...conflicts].map((id) => ({ id, v: now.get(id) ?? null })), c);
       metrics.track('sync', { k: 'conflict' });
     }
-    this.adopt(c.code, j, sent, unsent);
+    this.adopt(c.code, j, sent, { batch: new Set(byId.keys()), unsent, conflicts });
     if (unsent.size) this.again = true; // 남은 묶음을 이어서 보낸다
     this.setStatus('ok');
   },
-  // 서버 목록을 받아 브라우저 목록에 쓴다. 보내는 동안 이 기기에서 또 바꾼 항목과 아직 보내지 않은 항목(unsent)은 그대로 두고 다음에 보낸다
-  adopt(code, j, sent, unsent = new Set()) {
+  // 서버 목록을 받아 브라우저 목록에 쓴다. 보내는 동안 이 기기에서 또 바꾼 항목과 아직 보내지 않은 항목(unsent)은 그대로 두고 다음에 보낸다.
+  // 이번 묶음(batch)에 없던 그런 항목은 snap에 원래 기준 리비전을 남긴다. 최신 리비전으로 바꾸면 다음 요청이 다른 기기의 변경을 충돌 없이 덮어쓴다.
+  // 충돌 난 항목(conflicts)은 서버 값을 보여 주고, 이 기기 값은 hold로 확인을 기다린다
+  adopt(code, j, sent, { batch = new Set(), unsent = new Set(), conflicts = new Set() } = {}) {
     const now = this.local();
     const next = this.serverItems(j.items);
+    const before = this.conf()?.snap || {};
+    const snap = { ...j.items };
     // 아직 보내지 않은 삭제는 지금 목록에도 보낸 목록에도 없으므로 unsent도 함께 본다
     for (const id of new Set([...now.keys(), ...sent.keys(), ...unsent])) {
-      if (!unsent.has(id) && syncSame(now.get(id), sent.get(id))) continue;
+      if (conflicts.has(id) || (!unsent.has(id) && syncSame(now.get(id), sent.get(id)))) continue;
       if (now.has(id)) next.set(id, now.get(id)); else next.delete(id);
+      if (!batch.has(id)) { if (before[id]) snap[id] = before[id]; else delete snap[id]; }
     }
-    this.write(this.KEY, { code, rev: j.rev, snap: j.items, at: Date.now() });
+    this.write(this.KEY, { code, rev: j.rev, snap, at: Date.now() });
     const changed = next.size !== now.size || [...next].some(([id, v]) => !now.has(id) || !syncSame(v, now.get(id)));
     if (changed) this.setLocal(next);
     this.schedule();
