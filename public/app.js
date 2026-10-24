@@ -322,6 +322,7 @@ const watch = {
 // homeTrend.syncHeld: { reason, changes: [{ id, v, name }] } 서버에 바로 반영하지 않고 사용자 확인을 기다리는 이 기기 변경
 //   conflict: 같은 항목을 다른 기기가 먼저 바꿈 / stale: 오래 동기화하지 않아 서버 목록을 먼저 받음 / link: 연결할 때 이 기기에만 있던 항목
 const SYNC_MONTHS = [36, 60, 120, 192]; // APT_MONTHS
+const SYNC_BATCH = 100; // 요청 하나에 담는 변경 수 (서버 MAX_CHANGES 300·본문 64KB 안)
 const syncSame = (a, b) => JSON.stringify(a ?? null, Object.keys(a ?? {}).sort()) === JSON.stringify(b ?? null, Object.keys(b ?? {}).sort());
 const fmtCode = (c) => c.replace(/(.{5})(?=.)/g, '$1-');
 const sync = {
@@ -399,33 +400,40 @@ const sync = {
   async push() {
     const c = this.conf();
     const sent = this.local();
-    const changes = this.pending(c, sent);
+    const all = this.pending(c, sent);
+    // 변경이 많으면 나눠 보낸다. 삭제를 먼저 보내 중간 상태에서도 서버 항목 수 상한을 넘지 않게 한다
+    const changes = [...all.filter((x) => !x.v), ...all.filter((x) => x.v)].slice(0, SYNC_BATCH);
     this.lastRun = Date.now();
     this.setStatus('syncing');
     let j;
     try {
       j = await this.call('push', { code: c.code, base: c.rev, changes });
     } catch (e) {
+      if (this.conf()?.code !== c.code) return; // 그 사이 다른 코드로 연결했다. 이전 코드의 오류로 새 연결을 끊지 않는다
       if (e.status === 404) this.drop('이 동기화 코드는 재발급·삭제됐거나 1년간 쓰지 않아 없어졌어요. 연결을 끊었고, 목록은 이 브라우저에 그대로 있어요.');
       else this.setStatus('error');
       return;
     }
     if (this.conf()?.code !== c.code) return; // 그 사이 연결을 바꿨다
     const byId = new Map(changes.map((x) => [x.id, x]));
-    if (j.stale) this.hold('stale', changes, c);
+    // 오래된 기기: 아직 보내지 않은 변경까지 모두 확인을 받는다 (다음 묶음이 확인 없이 적용되지 않게)
+    const unsent = j.stale ? new Set() : new Set(all.filter((x) => !byId.has(x.id)).map((x) => x.id));
+    if (j.stale) this.hold('stale', all, c);
     else if (j.conflicts?.length) {
       this.hold('conflict', j.conflicts.map((x) => byId.get(x.id)).filter(Boolean), c);
       metrics.track('sync', { k: 'conflict' });
     }
-    this.adopt(c.code, j, sent);
+    this.adopt(c.code, j, sent, unsent);
+    if (unsent.size) this.again = true; // 남은 묶음을 이어서 보낸다
     this.setStatus('ok');
   },
-  // 서버 목록을 받아 브라우저 목록에 쓴다. 보내는 동안 이 기기에서 또 바꾼 항목은 그대로 두고 다음에 보낸다
-  adopt(code, j, sent) {
+  // 서버 목록을 받아 브라우저 목록에 쓴다. 보내는 동안 이 기기에서 또 바꾼 항목과 아직 보내지 않은 항목(unsent)은 그대로 두고 다음에 보낸다
+  adopt(code, j, sent, unsent = new Set()) {
     const now = this.local();
     const next = this.serverItems(j.items);
-    for (const id of new Set([...now.keys(), ...sent.keys()])) {
-      if (syncSame(now.get(id), sent.get(id))) continue;
+    // 아직 보내지 않은 삭제는 지금 목록에도 보낸 목록에도 없으므로 unsent도 함께 본다
+    for (const id of new Set([...now.keys(), ...sent.keys(), ...unsent])) {
+      if (!unsent.has(id) && syncSame(now.get(id), sent.get(id))) continue;
       if (now.has(id)) next.set(id, now.get(id)); else next.delete(id);
     }
     this.write(this.KEY, { code, rev: j.rev, snap: j.items, at: Date.now() });
@@ -1929,8 +1937,9 @@ async function viewApt(code, key, id) {
   const region = requireRegion(code);
   const opts = monthOpts(APT_MONTHS);
   const monthView = `apt.${code}.${key}`;
-  const savedMonths = watch.get(code, key)?.months; // 관심단지에 기억한 조회 기간
-  const months = getMonths(monthView, opts, opts.some(([m]) => m === savedMonths) ? savedMonths : 36);
+  // 관심단지에 기억한 조회 기간이 이 탭의 선택보다 먼저다. 다른 기기에서 바꾼 기간도 반영되고, 이 화면에서 고르면 함께 바뀐다(setMonths)
+  const savedMonths = watch.get(code, key)?.months;
+  const months = opts.some(([m]) => m === savedMonths) ? savedMonths : getMonths(monthView, opts, 36);
   showLoading(`<div class="crumb"><a href="#/r/${code}">${esc(region.name)}</a> ›</div>${skeleton('불러오는 중… (처음 보는 기간은 30초 정도 걸릴 수 있어요)')}`);
   const d = await getApt(code, key, months);
   if (isStale(id)) return;
