@@ -353,3 +353,22 @@ ul.changes a { color: var(--series-1); text-decoration: none; }
 .watch-note .btn { font-size: 12px; padding: 2px 8px; margin: 0 4px; }
 .watch-note .star { cursor: default; padding: 0; font-size: 14px; }
 .seg button.saved::after { content: " ★"; color: #eda100; }
+
+/* 관심 목록 동기화 코드 */
+.card.sync { margin-top: 16px; }
+.sync h2 { margin: 0 0 8px; }
+.sync p { font-size: 13px; }
+.sync-row { gap: 8px; flex-wrap: wrap; margin: 8px 0; }
+.sync-row .muted { font-size: 12px; flex: 1 1 240px; }
+.sync input[type="text"] {
+  font: inherit; color: var(--ink); background: var(--page);
+  border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; flex: 1 1 220px; min-width: 0; max-width: 360px;
+}
+.sync-code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 16px; letter-spacing: 0.04em; padding: 8px 12px; border: 1px dashed var(--axis); border-radius: 8px; overflow-wrap: anywhere; }
+.sync-qr svg { display: block; width: 180px; height: 180px; border-radius: 8px; } /* 흰 바탕 그대로 (어두운 테마에서도 찍히게) */
+.sync-warn { color: var(--ink-2); border-left: 3px solid var(--series-4); padding-left: 8px; }
+.sync-notice { color: var(--ink); background: var(--accent-wash); border-radius: 8px; padding: 6px 10px; }
+.sync-msg { font-size: 12px; margin: 4px 0; }
+.sync-msg:empty { display: none; }
+.sync details summary { cursor: pointer; font-size: 13px; color: var(--ink-2); }
+.sync-held { margin-bottom: 16px; border-color: var(--series-4); }

@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
-Description: homeTrend 서버 기반 (거래 이력 S3, DynamoDB, 상태 확인·방문 측정 API, Actions OIDC 역할, 비용 알림)
+Description: homeTrend 서버 기반 (거래 이력 S3, DynamoDB, 상태 확인·방문 측정·동기화 API, Actions OIDC 역할, 비용 알림)
 
 Parameters:
   GitHubSubjectPrefix:
@@ -203,6 +203,35 @@ Resources:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: !Sub /aws/lambda/${EventsFunction}
+      RetentionInDays: 30
+
+  # 관심 목록 동기화 코드 (로드맵 5번). 규칙은 functions/sync/sync.mjs
+  SyncFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: functions/sync/
+      Handler: index.handler
+      Environment:
+        Variables:
+          TABLE: !Ref DataTable
+          ALLOWED_ORIGIN: !Ref AllowedOrigin
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: [dynamodb:GetItem, dynamodb:PutItem, dynamodb:UpdateItem, dynamodb:DeleteItem]
+              Resource: !GetAtt DataTable.Arn
+      Events:
+        Sync:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref Api
+            Path: /sync/{op}
+            Method: POST
+
+  SyncLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${SyncFunction}
       RetentionInDays: 30
 
   MetricsAggregateFunction:

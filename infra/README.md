@@ -1,4 +1,4 @@
-# AWS 기반 (로드맵 1·2번)
+# AWS 기반 (로드맵 1·2·5번)
 
 조회 화면은 지금처럼 GitHub Pages 정적 파일이고, AWS는 상태가 필요한 기능에만 쓴다 ([로드맵](../docs/roadmap.md)).
 이 스택은 그 토대다.
@@ -6,9 +6,10 @@
 | 리소스 | 용도 |
 |---|---|
 | S3 `hometrend-history-<계정>` | 거래 이력(국토부 원본 캐시) 보관. 버전 관리·암호화·공개 차단 |
-| DynamoDB `hometrend` | 방문 측정(2번), 이후 동기화 목록·알림 구독. 시점 복구, TTL `expiresAt` |
+| DynamoDB `hometrend` | 방문 측정(2번), 동기화 목록(5번), 이후 알림 구독. 시점 복구, TTL `expiresAt` |
 | HTTP API `GET /health` | 상태 확인. 마지막으로 확정된 빌드를 돌려준다. Pages 출처만 CORS 허용, 요청 제한 |
 | HTTP API `POST /events`, `DELETE /devices/{id}` | 방문 이벤트 받기, 이 기기 기록 삭제 (아래 방문 측정) |
+| HTTP API `POST /sync/{op}` | 관심 목록 동기화 코드 만들기·맞추기·재발급·삭제 (아래 동기화 코드) |
 | 집계 Lambda | 매일 05:00 KST 활성화·재방문·날짜별 표 계산 (EventBridge Scheduler) |
 | IAM 역할 2개 | Actions OIDC. build job(main 브랜치)용, deploy job(`github-pages` 환경)용. 장기 키 없음 |
 | 예산 알림 | 계정 전체 월 비용이 기준(기본 $20)의 80%에 도달하거나 초과가 예상되면 메일 |
@@ -47,6 +48,15 @@ node scripts/metrics.js 28 --html   # 같은 집계를 차트 대시보드로 �
 
 집계는 매일 최근 60일을 다시 계산해 덮어쓴다. 바로 다시 만들려면 `aws lambda invoke --function-name <MetricsAggregateFunction 이름> /dev/stdout`.
 
+## 동기화 코드
+
+관심단지 화면에서 만든 코드로 관심 목록을 여러 기기에서 맞춘다. 병합 규칙은 [로드맵 세부 사항 5](../docs/roadmap.md), 항목 구조·검증·병합은 `functions/sync/sync.mjs`, 사용자에게 밝히는 내용은 개인정보처리방침(`#/privacy`)에 있다.
+
+- 저장: `pk sync#<코드 SHA-256>`, `sk s` 항목 하나에 목록 전체(삭제 표시를 뺀 항목 300개 상한). 코드 원문은 저장하지 않고 측정용 기기 ID와 연결하지 않는다.
+- 코드는 요청 본문으로만 받는다(주소·API 로그에 남지 않게). 본문·IP는 로그에 남기지 않고, IP는 메모리에서 분당 요청 수(전체 60, 코드 만들기 5) 판정에만 쓴다.
+- 보관: 삭제 표시 90일, 코드와 목록은 마지막 접근부터 1년(TTL, 접근 시각은 하루에 한 번 갱신). 사이트에서 바로 삭제할 수 있다.
+- 배포 후 따로 설정할 것은 없다. 사이트는 `API_URL`이 있으면 동기화 화면을 보여 준다.
+
 ## 처음 설정
 
 필요한 도구: [AWS SAM CLI](https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/install-sam-cli.html), 관리자 권한 AWS 자격 증명, `gh`.
@@ -75,6 +85,6 @@ curl "$(out ApiUrl)/health"   # {"ok":true,...,"confirmed":null}
 ## 되돌리기
 
 - 이력 되돌리기: `history/cache.tar.gz`의 이전 버전을 현재 버전으로 복사하고, `confirmed.json`의 `snapshot`이 가리키는 스냅샷을 지운다(다음 빌드는 그 스냅샷을 먼저 읽고, 없으면 장기 보관본을 읽는다).
-- 측정 중단: 저장소 변수 `API_URL`을 지우고 다시 배포하면 사이트가 이벤트를 보내지 않는다. 남은 기록은 TTL로 90일 안에 지워진다.
+- 측정 중단: 저장소 변수 `API_URL`을 지우고 다시 배포하면 사이트가 이벤트를 보내지 않는다. 남은 기록은 TTL로 90일 안에 지워진다. 동기화 화면도 함께 사라지고(브라우저 목록은 그대로), 동기화 목록은 1년 TTL로 지워진다.
 - S3 사용 중단: 저장소 변수 `HISTORY_BUCKET`을 지우면 Actions 캐시 방식으로 돌아간다(캐시가 비어 있으면 첫 실행처럼 전체를 다시 받는다).
 - 스택 삭제: `sam delete`. 버킷과 테이블은 데이터 보호를 위해 남으므로 필요하면 직접 지운다.
