@@ -36,6 +36,15 @@ test('관심 평형·첫 방문 안내: 저장 여부와 안내 행동 종류만
   ]);
 });
 
+test('동기화: 행동 종류만 받고 코드는 버린다', async () => {
+  const m = await load();
+  const b = m.parseBatch(JSON.stringify({ d: DEV, e: [
+    { id: ID(1), type: 'sync', p: { k: 'create', code: '0123456789abcdefghjkmnpqrs' } },
+    { id: ID(2), type: 'sync', p: { k: 'share' } },
+  ] }), NOW);
+  assert.deepEqual(b.events.map((e) => [e.type, e.props]), [['sync', { k: 'create' }], ['sync', {}]]);
+});
+
 test('형식이 틀린 요청은 거부한다', async () => {
   const m = await load();
   const bad = (o) => assert.throws(() => m.parseBatch(typeof o === 'string' ? o : JSON.stringify(o), NOW), m.BadRequest);

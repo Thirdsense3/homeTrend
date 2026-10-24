@@ -243,7 +243,8 @@ const phaseChip = (p) => (p ? `<span class="phase" title="${esc(p.note)}"><b>${p
 // 관심단지 (브라우저 저장). checked: 마지막으로 확인한 데이터 빌드 번호(meta.buildNo)
 // → 그 뒤 빌드에서 처음 확인된 거래를 '새로 확인된 거래'로 표시한다 (계약일이 지난 거래가 늦게 신고돼도 잡힌다)
 // 예전 seen(마지막으로 본 계약일)은 버리고, 전환 뒤 첫 방문의 빌드부터 다시 센다 (adopt)
-// area: 관심 평형(A.areaKey 값). 없으면 주력 평형으로 요약한다
+// area: 관심 평형(A.areaKey 값). 없으면 주력 평형으로 요약한다. months: 단지 화면 조회 기간
+// 동기화 코드를 연결했으면 저장할 때마다 서버에 맞춘다 (sync). quiet: 서버에서 받은 목록을 쓸 때
 const isArea = (a) => typeof a === 'string' && /^\d+(\.\d+)?$/.test(a);
 const watch = {
   list() {
@@ -262,7 +263,7 @@ const watch = {
       return [...merged.values()];
     } catch (_) { return []; }
   },
-  save(l) { try { localStorage.setItem('homeTrend.watch', JSON.stringify(l)); } catch (_) { /* 저장 불가 */ } },
+  save(l, quiet) { try { localStorage.setItem('homeTrend.watch', JSON.stringify(l)); } catch (_) { /* 저장 불가 */ } if (!quiet) sync.schedule(); },
   get(code, key) { key = A.canonicalKey(code, key, state.complexes?.[code]); return this.list().find((w) => w.code === code && w.key === key) || null; },
   has(code, key) { return !!this.get(code, key); },
   toggle(item) {
@@ -285,6 +286,15 @@ const watch = {
     this.save(l);
     metrics.track('watch_area');
   },
+  // 단지 화면에서 고른 조회 기간을 기억한다 (저장된 단지만)
+  setMonths(code, key, months) {
+    key = A.canonicalKey(code, key, state.complexes?.[code]);
+    const l = this.list();
+    const w = l.find((x) => x.code === code && x.key === key);
+    if (!w || w.months === months) return;
+    w.months = months;
+    this.save(l);
+  },
   // 확인 표시: 이 빌드까지 들어온 거래는 본 것으로 한다 (code 없이 부르면 전체)
   markChecked(code, key, no) {
     if (!no) return;
@@ -303,6 +313,205 @@ const watch = {
     this.save(this.list().map(({ seen, ...w }) => ({ ...w, checked: Number.isInteger(w.checked) ? w.checked : no })));
   },
 };
+
+// ---------- 관심 목록 동기화 코드 (로드맵 5번, 규칙은 infra/functions/sync/sync.mjs) ----------
+// 브라우저 목록이 먼저 저장되고 서버는 나중에 맞춘다. 서버가 없거나 실패해도 저장은 그대로이고, 다음 동기화 때 다시 보낸다.
+// 항목: 관심단지 w:<지역>:<단지 키> = { name, jibun, region, area, months }, 좋아요한 지역 r:<지역> = {}. 마지막 확인 빌드(checked)는 기기마다 따로
+// homeTrend.sync: { code, rev: 마지막으로 받은 서버 리비전, snap: 그때 서버 목록 { id: { r, v } | { r, d } }, at: 받은 시각(표시용) }
+// → 지금 목록과 snap의 차이가 보낼 변경이고, 항목마다 snap의 리비전(from)을 함께 보내 서버가 충돌을 판정한다. 기기 시각으로 정하지 않는다
+// homeTrend.syncHeld: { reason, changes: [{ id, v, name }] } 서버에 바로 반영하지 않고 사용자 확인을 기다리는 이 기기 변경
+//   conflict: 같은 항목을 다른 기기가 먼저 바꿈 / stale: 오래 동기화하지 않아 서버 목록을 먼저 받음 / link: 연결할 때 이 기기에만 있던 항목
+const SYNC_MONTHS = [36, 60, 120, 192]; // APT_MONTHS
+const syncSame = (a, b) => JSON.stringify(a ?? null, Object.keys(a ?? {}).sort()) === JSON.stringify(b ?? null, Object.keys(b ?? {}).sort());
+const fmtCode = (c) => c.replace(/(.{5})(?=.)/g, '$1-');
+const sync = {
+  KEY: 'homeTrend.sync', HELD: 'homeTrend.syncHeld',
+  timer: 0, busy: null, again: false, lastRun: 0, status: '', notice: '',
+  read(k) { try { return JSON.parse(localStorage.getItem(k)); } catch (_) { return null; } },
+  write(k, v) { try { if (v == null) localStorage.removeItem(k); else localStorage.setItem(k, JSON.stringify(v)); } catch (_) { /* 저장 불가 */ } },
+  available: () => !!state.meta?.api,
+  conf() { const c = this.read(this.KEY); return c && typeof c.code === 'string' && c.snap && typeof c.snap === 'object' ? c : null; },
+  held() { const h = this.read(this.HELD); return h && Array.isArray(h.changes) && h.changes.length ? h : null; },
+  // 지금 브라우저 목록 → 동기화 항목. 서버가 받지 않는 형식은 빼서 요청 전체가 거부되지 않게 한다
+  local() {
+    const m = new Map();
+    for (const w of watch.list()) {
+      if (!/^\d{5}$/.test(w.code) || !w.key || w.key.length > 120 || !w.name || w.name.length > 100) continue;
+      const v = { name: w.name };
+      for (const k of ['jibun', 'region']) if (typeof w[k] === 'string' && w[k].length <= 40) v[k] = w[k];
+      if (isArea(w.area) && /^\d{1,4}(\.\d{1,2})?$/.test(w.area)) v.area = w.area;
+      if (SYNC_MONTHS.includes(w.months)) v.months = w.months;
+      m.set(`w:${w.code}:${w.key}`, v);
+    }
+    for (const c of regionLikes.list()) if (/^\d{5}$/.test(c)) m.set(`r:${c}`, {});
+    return m;
+  },
+  // 동기화 항목 → 브라우저 목록. 기존 순서를 지키고 새 항목은 뒤에 붙인다. 새로 받은 단지는 지금 빌드부터 새 거래를 센다
+  setLocal(items) {
+    const old = new Map(watch.list().map((w) => [`w:${w.code}:${w.key}`, w]));
+    const no = state.meta?.buildNo || undefined;
+    const ids = [...old.keys(), ...regionLikes.list().map((c) => `r:${c}`), ...items.keys()];
+    const list = [], likes = [];
+    for (const id of new Set(ids)) {
+      if (!items.has(id)) continue;
+      const [kind, code, ...rest] = id.split(':');
+      if (kind === 'r') likes.push(code);
+      else list.push({ code, key: rest.join(':'), ...items.get(id), checked: old.get(id)?.checked ?? no });
+    }
+    watch.save(list, true);
+    regionLikes.save(likes, true);
+  },
+  serverItems(items) { return new Map(Object.entries(items || {}).filter(([, it]) => !it.d).map(([id, it]) => [id, it.v])); },
+  pending(c, local = this.local()) {
+    const out = [];
+    for (const id of new Set([...local.keys(), ...Object.keys(c.snap)])) {
+      const s = c.snap[id];
+      const v = local.has(id) ? local.get(id) : null;
+      if (!syncSame(v, s && !s.d ? s.v : null)) out.push({ id, v, from: s?.r || 0 });
+    }
+    return out;
+  },
+  async call(op, body) {
+    const text = JSON.stringify(body);
+    // text/plain 본문이라 사전 요청(CORS preflight) 없이 보낸다. 코드는 주소가 아니라 본문에만 담는다
+    const r = await fetch(`${state.meta.api}/sync/${op}`, { method: 'POST', body: text, keepalive: text.length < 60000 });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) { const e = new Error(j.error || r.statusText || String(r.status)); e.status = r.status; throw e; }
+    return j;
+  },
+  // 바뀐 게 있을 때만 잠시 모아서 보낸다
+  schedule() {
+    const c = this.conf();
+    if (!c || !this.available() || !this.pending(c).length) return;
+    clearTimeout(this.timer);
+    this.timer = setTimeout(() => this.run(), 1500);
+  },
+  run() {
+    clearTimeout(this.timer);
+    if (!this.conf() || !this.available()) return Promise.resolve();
+    if (this.busy) { this.again = true; return this.busy; }
+    this.busy = this.push().finally(() => {
+      this.busy = null;
+      if (this.again) { this.again = false; this.run(); }
+    });
+    return this.busy;
+  },
+  async push() {
+    const c = this.conf();
+    const sent = this.local();
+    const changes = this.pending(c, sent);
+    this.lastRun = Date.now();
+    this.setStatus('syncing');
+    let j;
+    try {
+      j = await this.call('push', { code: c.code, base: c.rev, changes });
+    } catch (e) {
+      if (e.status === 404) this.drop('이 동기화 코드는 재발급·삭제됐거나 1년간 쓰지 않아 없어졌어요. 연결을 끊었고, 목록은 이 브라우저에 그대로 있어요.');
+      else this.setStatus('error');
+      return;
+    }
+    if (this.conf()?.code !== c.code) return; // 그 사이 연결을 바꿨다
+    const byId = new Map(changes.map((x) => [x.id, x]));
+    if (j.stale) this.hold('stale', changes, c);
+    else if (j.conflicts?.length) {
+      this.hold('conflict', j.conflicts.map((x) => byId.get(x.id)).filter(Boolean), c);
+      metrics.track('sync', { k: 'conflict' });
+    }
+    this.adopt(c.code, j, sent);
+    this.setStatus('ok');
+  },
+  // 서버 목록을 받아 브라우저 목록에 쓴다. 보내는 동안 이 기기에서 또 바꾼 항목은 그대로 두고 다음에 보낸다
+  adopt(code, j, sent) {
+    const now = this.local();
+    const next = this.serverItems(j.items);
+    for (const id of new Set([...now.keys(), ...sent.keys()])) {
+      if (syncSame(now.get(id), sent.get(id))) continue;
+      if (now.has(id)) next.set(id, now.get(id)); else next.delete(id);
+    }
+    this.write(this.KEY, { code, rev: j.rev, snap: j.items, at: Date.now() });
+    const changed = next.size !== now.size || [...next].some(([id, v]) => !now.has(id) || !syncSame(v, now.get(id)));
+    if (changed) this.setLocal(next);
+    this.schedule();
+    if (changed && location.hash.startsWith('#/watch')) route();
+  },
+  // 사용자 확인을 기다리는 변경. 이름은 지금(서버 값으로 바뀌기 전) 목록에서 찾아 둔다
+  hold(reason, changes, c) {
+    if (!changes.length) return;
+    const local = this.local();
+    const named = changes.map(({ id, v }) => {
+      const s = c?.snap?.[id];
+      return { id, v, name: id.startsWith('r:') ? regionOf(id.slice(2))?.name || id.slice(2) : (v || local.get(id) || (s && s.v))?.name || id.split(':').slice(2).join(':') };
+    });
+    // 같은 항목이 이미 기다리고 있으면 새 변경으로 바꾼다
+    const prev = (this.held()?.changes || []).filter((x) => !named.some((n) => n.id === x.id));
+    this.write(this.HELD, { reason, changes: [...prev, ...named] });
+  },
+  // 기다리던 변경 적용: 브라우저 목록에 쓰고 보낸다 (snap에 지금 서버 리비전이 있으므로 이번에는 적용된다)
+  applyHeld() {
+    const h = this.held();
+    this.write(this.HELD, null);
+    if (!h) return;
+    const next = this.local();
+    for (const { id, v } of h.changes) { if (v) next.set(id, v); else next.delete(id); }
+    this.setLocal(next);
+    this.run();
+  },
+  discardHeld() { this.write(this.HELD, null); },
+  // 새 코드: 지금 목록을 올린다
+  async create() {
+    const j = await this.call('create', { changes: [...this.local()].map(([id, v]) => ({ id, v, from: 0 })) });
+    this.write(this.KEY, { code: j.code, rev: j.rev, snap: j.items, at: Date.now() });
+    this.write(this.HELD, null);
+    metrics.track('sync', { k: 'create' });
+  },
+  // 다른 기기의 코드에 연결: 서버 목록을 받고, 이 기기에만 있거나 값이 다른 항목은 합칠지 묻는다
+  async link(input) {
+    const code = normalizeSyncCode(input);
+    if (!code) throw new Error('코드 형식이 맞지 않아요. 26자를 그대로 넣어 주세요');
+    let j;
+    try {
+      j = await this.call('push', { code, base: 0, changes: [] });
+    } catch (e) {
+      throw e.status === 404 ? new Error('없는 코드예요. 재발급·삭제됐거나 1년간 쓰지 않은 코드일 수 있어요') : e;
+    }
+    const server = this.serverItems(j.items);
+    const extra = [...this.local()].filter(([id, v]) => !syncSame(v, server.get(id))).map(([id, v]) => ({ id, v }));
+    this.write(this.HELD, null);
+    this.hold('link', extra);
+    this.write(this.KEY, { code, rev: j.rev, snap: j.items, at: Date.now() });
+    this.setLocal(server);
+    this.notice = '';
+    metrics.track('sync', { k: 'link' });
+  },
+  async rotate() {
+    const c = this.conf();
+    await this.run();
+    const j = await this.call('rotate', { code: c.code });
+    this.write(this.KEY, { ...this.conf(), code: j.code });
+    metrics.track('sync', { k: 'rotate' });
+  },
+  async remove() {
+    const c = this.conf();
+    try { await this.call('delete', { code: c.code }); } catch (e) { if (e.status !== 404) throw e; }
+    this.drop('');
+    metrics.track('sync', { k: 'delete' });
+  },
+  // 이 기기만 연결 해제 (서버 목록과 다른 기기는 그대로)
+  unlink() { this.drop(''); metrics.track('sync', { k: 'unlink' }); },
+  drop(notice) {
+    clearTimeout(this.timer);
+    this.write(this.KEY, null);
+    this.write(this.HELD, null);
+    this.notice = notice;
+    this.setStatus('');
+  },
+  setStatus(s) { this.status = s; document.dispatchEvent(new Event('ht:sync')); },
+};
+// sync.mjs normalizeCode와 같은 규칙: 대소문자·하이픈·공백 무시, i·l → 1, o → 0
+function normalizeSyncCode(s) {
+  const c = String(s || '').toLowerCase().replace(/[\s-]/g, '').replace(/[il]/g, '1').replace(/o/g, '0');
+  return /^[0-7][0-9a-hjkmnp-tv-z]{25}$/.test(c) ? c : null;
+}
 
 function sparkline(values, w = 110, h = 28) {
   const v = values.filter((x) => x != null);
@@ -786,8 +995,15 @@ async function route() {
       watch.adopt(state.meta.buildNo);
       document.dispatchEvent(new Event('ht:meta')); // 먼저 눌러 둔 검색창이 이어서 목록을 받도록
       metrics.track('visit');
+      sync.run(); // 동기화 코드를 연결했으면 다른 기기에서 바꾼 목록을 받는다
     }
-    const parts = location.hash.replace(/^#\/?/, '').split('/').map(decodeURIComponent);
+    let parts = location.hash.replace(/^#\/?/, '').split('/').map(decodeURIComponent);
+    // 동기화 링크: 코드가 방문 기록에 남지 않게 주소를 관심단지로 바꾸고 연결한다
+    if (parts[0] === 'sync') {
+      history.replaceState(null, '', '#/watch');
+      linkFromUrl(parts[1]);
+      parts = ['watch'];
+    }
     const view = parts[0];
     const tab = view === 'r' || view === 'a' ? regionOf(parts[1])?.group
       : view === 'watch' ? 'watch'
@@ -990,7 +1206,8 @@ function forecastCard(code, brokerOnly) {
 const regionLikes = {
   list() { try { const v = JSON.parse(localStorage.getItem('homeTrend.regionLikes')); return Array.isArray(v) ? v.filter((x) => typeof x === 'string') : []; } catch (_) { return []; } },
   has(code) { return this.list().includes(code); },
-  toggle(code) { const list = this.list(); const next = list.includes(code) ? list.filter((x) => x !== code) : [...list, code]; try { localStorage.setItem('homeTrend.regionLikes', JSON.stringify(next)); } catch (_) {} },
+  save(list, quiet) { try { localStorage.setItem('homeTrend.regionLikes', JSON.stringify(list)); } catch (_) {} if (!quiet) sync.schedule(); },
+  toggle(code) { const list = this.list(); this.save(list.includes(code) ? list.filter((x) => x !== code) : [...list, code]); },
 };
 function initRegionJump() {
   const select = document.getElementById('regionJump');
@@ -1502,10 +1719,11 @@ function getMonths(view, opts, def) {
   try { v = Number(sessionStorage.getItem(`homeTrend.months.${view}`)); } catch (_) { /* 저장소 사용 불가 */ }
   return opts.some(([m]) => m === v) ? v : def;
 }
-function bindMonths(view) {
+function bindMonths(view, onPick) {
   app.querySelectorAll('#months button').forEach((b) => b.addEventListener('click', () => {
     if (b.classList.contains('on')) return;
     try { sessionStorage.setItem(`homeTrend.months.${view}`, b.dataset.m); } catch (_) { /* 무시 */ }
+    onPick?.(Number(b.dataset.m));
     b.parentNode.querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b));
     state.keepView = true; // 다시 그릴 때 현재 화면을 지우지 않고 흐리게 유지
     route();
@@ -1711,7 +1929,8 @@ async function viewApt(code, key, id) {
   const region = requireRegion(code);
   const opts = monthOpts(APT_MONTHS);
   const monthView = `apt.${code}.${key}`;
-  const months = getMonths(monthView, opts, 36);
+  const savedMonths = watch.get(code, key)?.months; // 관심단지에 기억한 조회 기간
+  const months = getMonths(monthView, opts, opts.some(([m]) => m === savedMonths) ? savedMonths : 36);
   showLoading(`<div class="crumb"><a href="#/r/${code}">${esc(region.name)}</a> ›</div>${skeleton('불러오는 중… (처음 보는 기간은 30초 정도 걸릴 수 있어요)')}`);
   const d = await getApt(code, key, months);
   if (isStale(id)) return;
@@ -1746,7 +1965,7 @@ async function viewApt(code, key, id) {
     <div class="row" style="margin-bottom:16px"><span class="muted">전용면적</span><div class="seg" id="areas">${d.areas.map((a) => `<button data-a="${a.area}" class="${a.area === areaSel ? 'on' : ''}">${a.area}㎡ <span class="muted">(${a.partialOnly ? `이번 달 ${a.partialCount}건 · 신고 진행 중` : `매매 ${a.count}건${a.partialCount ? ` · 이번 달 ${a.partialCount}건` : ''}`})</span></button>`).join('')}</div></div>
     <p class="watch-note" id="watchNote"></p>
     <p class="muted">조회 기간에 매매 또는 전세 거래가 있는 전용면적이에요. 거래가 없던 면적은 고를 수 없고, 조회 기간을 늘리면 더 오래전에 거래된 면적도 보여요. 원본 면적을 소수 둘째 자리까지 구분합니다.${d.areas.some((a) => a.partialCount) ? ' 매매 건수는 지난달까지이고, 이번 달(신고 진행 중) 거래는 따로 셉니다.' : ''}${A.apartmentNames(code, apt.dong, apt.name, apt.jibun).length > 1 ? ` 원본 명칭: ${esc(A.apartmentNames(code, apt.dong, apt.name, apt.jibun).filter((n) => n !== apt.name).join(', '))}` : ''}</p><div id="areaView"></div>`;
-  bindMonths(monthView);
+  bindMonths(monthView, (m) => watch.setMonths(code, key, m));
   app.querySelectorAll('.copy-name').forEach((a) => a.addEventListener('click', () => {
     navigator.clipboard?.writeText(apt.name).then(() => {
       document.getElementById('copied').textContent = `'${apt.name}' 복사됨 — 검색창에 붙여넣으세요`;
@@ -1769,7 +1988,7 @@ async function viewApt(code, key, id) {
     document.getElementById('setArea')?.addEventListener('click', () => { watch.setArea(code, key, areaSel); renderWatch(); });
   };
   document.getElementById('star').addEventListener('click', () => {
-    watch.toggle({ code, key, name: apt.name, jibun: apt.jibun, region: region.name, area: areaSel });
+    watch.toggle({ code, key, name: apt.name, jibun: apt.jibun, region: region.name, area: areaSel, months });
     renderWatch();
   });
   document.querySelectorAll('#areas button').forEach((b) => b.addEventListener('click', () => {
@@ -1853,7 +2072,7 @@ async function viewApt(code, key, id) {
 }
 
 // ---------- 개인정보처리방침 ----------
-const PRIVACY_UPDATED = '2026-10-22';
+const PRIVACY_UPDATED = '2026-10-25';
 function viewPrivacy() {
   const on = metrics.available();
   app.innerHTML = `<article class="card prose">
@@ -1864,20 +2083,30 @@ function viewPrivacy() {
 
     <h2>브라우저에만 저장하는 것</h2>
     <ul>
-      <li>관심단지(★)와 관심 평형, 좋아요한 지역(♥), 테마, 화면 설정(첫 방문 안내를 닫았는지 포함) — 서버로 보내지 않아요.</li>
+      <li>관심단지(★)와 관심 평형, 좋아요한 지역(♥) — 동기화 코드를 만들거나 연결하지 않으면 서버로 보내지 않아요(아래).</li>
+      <li>테마, 화면 설정(첫 방문 안내를 닫았는지 포함), 관심단지별 마지막 확인 시점 — 서버로 보내지 않아요.</li>
       <li>무작위 기기 ID와 첫 방문 시각 — 측정에 써요(아래).</li>
+    </ul>
+
+    <h2>동기화 코드를 쓸 때 서버에 저장하는 것</h2>
+    <p>관심단지 화면에서 동기화 코드를 만들거나 다른 기기의 코드로 연결한 경우에만 저장해요.</p>
+    <ul>
+      <li><b>관심 목록</b>: 관심단지(단지 이름·지번·지역, 관심 평형, 단지 화면 조회 기간)와 좋아요한 지역, 항목별 변경 순번, 지운 항목의 삭제 표시(90일 보관 뒤 삭제), 만든·고친 시각.</li>
+      <li><b>동기화 코드</b>: 무작위로 만든 128비트 값이에요. 서버에는 코드 원문이 아니라 해시(SHA-256)만 저장하고, 코드는 주소가 아닌 요청 본문으로만 받아요. 측정용 기기 ID와 연결하지 않아요.</li>
+      <li>코드나 링크를 아는 사람은 누구나 목록을 보고 고칠 수 있어요. 공유에 주의하고, 알려졌다면 재발급하세요. 재발급하면 이전 코드는 바로 무효가 돼요.</li>
+      <li><b>보관과 삭제</b>: 1년간 어느 기기에서도 열지 않으면 코드와 목록을 자동으로 지워요. 관심단지 화면의 '코드 관리 → 서버에서 삭제'로 바로 지울 수도 있어요.</li>
     </ul>
 
     <h2>측정을 위해 보내는 것</h2>
     <ul>
       <li><b>무작위 기기 ID</b>: 이 브라우저에서 처음 만든 임의의 값이에요. 사람이나 기기 정보와 연결되지 않고, 다른 브라우저·기기와 공유되지 않아요.</li>
-      <li><b>행동 종류</b>: 방문, 화면 종류(개요·지역·단지·관심단지), 검색 결과 선택(지역인지 단지인지만), 관심단지 추가·삭제와 개수, 관심 평형을 골랐는지 여부(어떤 평형인지는 보내지 않아요), 첫 방문 안내를 보거나 닫거나 검색을 시작했는지, 관심단지의 새 거래 유무·건수와 확인 여부.</li>
+      <li><b>행동 종류</b>: 방문, 화면 종류(개요·지역·단지·관심단지), 검색 결과 선택(지역인지 단지인지만), 관심단지 추가·삭제와 개수, 관심 평형을 골랐는지 여부(어떤 평형인지는 보내지 않아요), 첫 방문 안내를 보거나 닫거나 검색을 시작했는지, 관심단지의 새 거래 유무·건수와 확인 여부, 동기화 코드 만들기·연결·재발급·삭제·해제와 충돌 여부(코드는 보내지 않아요).</li>
       <li><b>첫 방문 시각, 모바일 여부</b>, 서버가 받은 시각, 측정 방식 버전.</li>
     </ul>
 
     <h2>보내지 않는 것</h2>
     <ul>
-      <li>검색어, 어떤 지역·단지를 봤거나 저장했는지(관심 목록 내용).</li>
+      <li>측정 기록에는 검색어, 어떤 지역·단지를 봤거나 저장했는지(관심 목록 내용)를 담지 않아요.</li>
       <li>이름·연락처·이메일, 쿠키, 브라우저 지문.</li>
       <li>IP 주소: 과도한 요청을 막는 판정에만 잠깐 쓰고 저장하지 않아요.</li>
     </ul>
@@ -1890,7 +2119,7 @@ function viewPrivacy() {
     </ul>
 
     <h2>처리 장소</h2>
-    <p>측정 기록은 Amazon Web Services 서울 리전(ap-northeast-2)의 운영자 계정에 저장돼요. 사이트 파일은 GitHub Pages로 제공되며, GitHub이 접속 기록을 따로 처리할 수 있어요(<a href="https://docs.github.com/ko/site-policy/privacy-policies/github-general-privacy-statement" target="_blank" rel="noopener">GitHub 개인정보처리방침</a>).</p>
+    <p>측정 기록과 동기화 목록은 Amazon Web Services 서울 리전(ap-northeast-2)의 운영자 계정에 저장돼요. 사이트 파일은 GitHub Pages로 제공되며, GitHub이 접속 기록을 따로 처리할 수 있어요(<a href="https://docs.github.com/ko/site-policy/privacy-policies/github-general-privacy-statement" target="_blank" rel="noopener">GitHub 개인정보처리방침</a>).</p>
 
     <h2>측정 끄기와 기록 삭제</h2>
     ${on ? `<p>측정을 끄면 이 브라우저는 더 이상 아무것도 보내지 않아요. 기록 삭제는 서버에 있는 이 기기의 기록을 바로 지우고 기기 ID를 새로 만들어요.</p>
@@ -1899,10 +2128,10 @@ function viewPrivacy() {
       <button type="button" class="btn" id="metricsDelete">이 기기 기록 삭제</button>
     </div>
     <p class="muted" id="metricsMsg" role="status" style="font-size:13px"></p>` : '<p>지금 이 사이트(또는 이 브라우저)에서는 측정이 켜져 있지 않아 보내는 기록이 없어요. 브라우저 저장소를 지우면 기기 ID도 함께 지워져요.</p>'}
-    <p>브라우저 설정에서 이 사이트의 저장 데이터를 지우면 관심단지와 함께 기기 ID도 지워져요. 이 경우 서버의 기록은 위 보관 기간이 지나면 삭제돼요.</p>
+    <p>브라우저 설정에서 이 사이트의 저장 데이터를 지우면 관심단지와 함께 기기 ID·동기화 코드도 지워져요. 이 경우 서버의 기록은 위 보관 기간이 지나면 삭제돼요. 동기화 코드를 다른 곳에 적어 두었다면 그 코드로 목록을 다시 받을 수 있어요.</p>
 
     <h2>문의</h2>
-    <p><a href="https://github.com/Thirdsense3/homeTrend/issues" target="_blank" rel="noopener">GitHub 이슈</a>로 알려 주세요. 측정 항목이나 보관 기간이 바뀌면 이 페이지와 시행일을 먼저 고쳐요.</p>
+    <p><a href="https://github.com/Thirdsense3/homeTrend/issues" target="_blank" rel="noopener">GitHub 이슈</a>로 알려 주세요. 측정·동기화 항목이나 보관 기간이 바뀌면 이 페이지와 시행일을 먼저 고쳐요.</p>
   </article>`;
   if (!on) return;
   const toggle = document.getElementById('metricsToggle'), msg = document.getElementById('metricsMsg');
@@ -1938,6 +2167,177 @@ const tradeLine = (t) => `${fmtDate(t.date)} · ${t.area}㎡ ${t.floor}층 · <b
 const SURGE_NOTE = '과거 거래 기준이며 앞으로의 가격을 뜻하지 않아요';
 const surgeBasis = (b) => `직전 6개월 중위값 ${fmtEok(b.median)} 대비 ${delta(b.rise)} · 기준 거래 ${b.n}건 · 최근 60일 높은 거래 ${b.count}건`;
 
+// ---------- 동기화 코드 화면 (관심단지 화면: 위에 확인 대기 변경, 아래에 코드 카드) ----------
+const QR_SRC = 'https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js';
+const syncLink = (code) => `${location.origin}${location.pathname}#/sync/${code}`;
+const fmtTime = (ms) => { const d = new Date(ms); return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; };
+// 서버 주소가 없으면(측정·동기화 서버를 쓰지 않는 배포, 로컬 서버) 동기화 화면을 그리지 않는다
+const syncSlots = () => (sync.available() ? ['<div id="syncHeld"></div>', '<section class="card sync" id="sync"></section>'] : ['', '']);
+
+// 동기화 링크(#/sync/<코드>)로 들어옴: 주소에서 코드를 지운 뒤 연결한다
+async function linkFromUrl(input) {
+  const code = normalizeSyncCode(input);
+  const c = sync.conf();
+  if (!sync.available()) sync.notice = '지금은 동기화를 쓸 수 없어요. 목록은 이 브라우저에만 저장돼요.';
+  else if (!code) sync.notice = '링크의 동기화 코드 형식이 맞지 않아요. 링크를 다시 복사해 열어 주세요.';
+  else if (c?.code === code) sync.notice = '이미 이 코드로 동기화하고 있어요.';
+  else if (c && !confirm('이 기기는 다른 동기화 코드에 연결돼 있어요. 링크의 코드로 바꿀까요? 지금 코드의 목록은 서버에 그대로 남아요.')) return;
+  else {
+    // 상태만 바꾸고 알리지 않는다 (알리면 카드가 먼저 다시 그려지며 안내를 써 버린다). 아래 route()가 다시 그린다
+    sync.status = 'syncing';
+    try {
+      await sync.link(code);
+      sync.notice = '연결했어요. 이제 이 기기에서도 같은 목록을 봐요.';
+      sync.status = 'ok';
+    } catch (e) {
+      sync.notice = `연결하지 못했어요: ${e.message}`;
+      sync.status = e.status ? '' : 'error';
+    }
+  }
+  if (location.hash.startsWith('#/watch')) route();
+}
+
+function renderSync() {
+  renderHeld();
+  const el = document.getElementById('sync');
+  if (!el) return;
+  const c = sync.conf();
+  el.dataset.code = c?.code || '';
+  const notice = sync.notice ? `<p class="sync-notice" role="status">${esc(sync.notice)}</p>` : '';
+  sync.notice = '';
+  el.innerHTML = !c
+    ? `<h2>다른 기기에서도 보기</h2>${notice}
+      <p class="muted">동기화 코드를 만들면 관심단지(관심 평형·조회 기간 포함)와 좋아요한 지역을 서버에 저장하고, 링크나 QR로 휴대폰·다른 브라우저를 연결해요. 가입·로그인은 필요 없어요. 만들지 않으면 지금처럼 이 브라우저에만 저장돼요.</p>
+      <div class="row sync-row"><button type="button" class="btn" data-sync="create">동기화 코드 만들기</button></div>
+      <form class="row sync-row" id="syncForm"><input type="text" id="syncInput" placeholder="다른 기기에서 받은 코드" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="동기화 코드"><button class="btn">연결</button></form>
+      <p class="muted sync-msg" id="syncMsg" role="status"></p>`
+    : `<div class="row"><h2 style="margin:0">다른 기기에서도 보기</h2><span class="tag new">동기화 켜짐</span></div>${notice}
+      <p>다른 기기에서 아래 링크를 열거나 QR을 찍으면 같은 목록을 봐요. 어느 기기에서 바꿔도 서로 맞춰져요.</p>
+      <div class="sync-code num" aria-label="동기화 코드">${fmtCode(c.code)}</div>
+      <div class="row sync-row"><button type="button" class="btn" data-sync="copy">링크 복사</button><button type="button" class="btn" data-sync="qr">QR 보기</button><button type="button" class="btn" data-sync="now">지금 동기화</button></div>
+      <div class="sync-qr" id="syncQr" hidden></div>
+      <p class="sync-warn">코드나 링크를 아는 사람은 누구나 이 목록을 보고 고칠 수 있어요. 공개된 곳에 올리지 말고, 다른 사람이 알게 됐다면 재발급하세요.</p>
+      <p class="muted sync-msg" id="syncStatus"></p>
+      <p class="muted sync-msg" id="syncMsg" role="status"></p>
+      <details><summary>코드 관리</summary>
+        <div class="row sync-row"><button type="button" class="btn" data-sync="rotate">코드 재발급</button><span class="muted">새 코드를 만들고 지금 코드는 바로 무효가 돼요. 다른 기기는 새 링크로 다시 연결해야 해요.</span></div>
+        <div class="row sync-row"><button type="button" class="btn" data-sync="unlink">이 기기 연결 해제</button><span class="muted">목록은 이 브라우저에 남고, 서버와 다른 기기는 그대로예요.</span></div>
+        <div class="row sync-row"><button type="button" class="btn" data-sync="delete">서버에서 삭제</button><span class="muted">서버의 목록과 코드를 바로 지워요. 이 브라우저 목록은 남아요. 1년간 어느 기기에서도 열지 않으면 자동으로 지워져요.</span></div>
+      </details>`;
+  drawSyncStatus();
+  const msg = document.getElementById('syncMsg');
+  el.onclick = async (e) => {
+    const b = e.target.closest('[data-sync]');
+    if (!b) return;
+    const act = b.dataset.sync;
+    if (act === 'copy') {
+      const link = syncLink(sync.conf().code);
+      navigator.clipboard?.writeText(link).then(() => { msg.textContent = '링크를 복사했어요. 다른 기기에서 열어 주세요.'; }, () => { msg.textContent = link; });
+      return;
+    }
+    if (act === 'qr') {
+      const box = document.getElementById('syncQr');
+      box.hidden = !box.hidden;
+      b.textContent = box.hidden ? 'QR 보기' : 'QR 닫기';
+      if (!box.hidden && !box.innerHTML) showQr(box, syncLink(sync.conf().code)).catch((err) => { box.hidden = true; msg.textContent = err.message; });
+      return;
+    }
+    if (act === 'rotate' && !confirm('코드를 재발급할까요? 지금 코드와 링크는 바로 무효가 되고, 다른 기기는 새 링크로 다시 연결해야 해요.')) return;
+    if (act === 'delete' && !confirm('서버의 목록과 코드를 지울까요? 이 브라우저 목록은 남지만, 이 코드로 연결한 다른 기기는 더 이상 맞춰지지 않아요.')) return;
+    b.disabled = true;
+    msg.textContent = '처리하는 중…';
+    try {
+      if (act === 'create') await sync.create();
+      else if (act === 'now') { await sync.run(); msg.textContent = ''; b.disabled = false; return; }
+      else if (act === 'rotate') { await sync.rotate(); sync.notice = '새 코드를 만들었어요. 다른 기기는 새 링크로 다시 연결해 주세요.'; }
+      else if (act === 'unlink') { sync.unlink(); sync.notice = '이 기기의 연결을 해제했어요. 목록은 이 브라우저에 그대로 있어요.'; }
+      else if (act === 'delete') { await sync.remove(); sync.notice = '서버의 목록과 코드를 지웠어요. 이 브라우저 목록은 그대로예요.'; }
+      renderSync();
+    } catch (err) {
+      msg.textContent = `하지 못했어요 (${err.message}). 잠시 뒤 다시 시도해 주세요.`;
+      b.disabled = false;
+    }
+  };
+  document.getElementById('syncForm')?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const btn = e.target.querySelector('button');
+    btn.disabled = true;
+    msg.textContent = '연결하는 중…';
+    try {
+      await sync.link(document.getElementById('syncInput').value);
+      sync.notice = '연결했어요. 이제 이 기기에서도 같은 목록을 봐요.';
+      route();
+    } catch (err) {
+      msg.textContent = `연결하지 못했어요: ${err.message}`;
+      btn.disabled = false;
+    }
+  });
+}
+function drawSyncStatus() {
+  const el = document.getElementById('syncStatus');
+  const c = sync.conf();
+  if (!el || !c) return;
+  const n = sync.pending(c).length;
+  el.textContent = sync.status === 'syncing' ? '동기화하는 중…'
+    : sync.status === 'error' ? `서버에 연결하지 못했어요. 목록은 이 브라우저에 저장돼 있고, 다음에 다시 맞춰요${n ? ` (보내지 못한 변경 ${n}건)` : ''}.`
+    : `마지막 동기화 ${c.at ? fmtTime(c.at) : '–'}${n ? ` · 보낼 변경 ${n}건` : ''}`;
+}
+// 연결 상태가 바뀌면 카드를 다시 그리고, 아니면 상태 줄만 고친다 (입력 중인 코드를 지우지 않게)
+document.addEventListener('ht:sync', () => {
+  const el = document.getElementById('sync');
+  if (el && el.dataset.code !== (sync.conf()?.code || '')) renderSync();
+  else { drawSyncStatus(); renderHeld(); }
+});
+// 다른 기기에서 바꾼 목록: 화면으로 돌아올 때 받는다 (1분에 한 번까지). 떠날 때 보낼 게 남았으면 바로 보낸다
+document.addEventListener('visibilitychange', () => {
+  const c = sync.conf();
+  if (!c || !sync.available()) return;
+  if (document.visibilityState === 'visible' ? Date.now() - sync.lastRun > 60000 : sync.pending(c).length) sync.run();
+});
+// 오프라인에서 저장한 변경은 네트워크가 돌아오면 보낸다
+window.addEventListener('online', () => { if (sync.status === 'error') sync.run(); });
+async function showQr(box, text) {
+  if (!window.qrcode) {
+    await new Promise((ok, no) => {
+      const s = document.createElement('script');
+      s.src = QR_SRC;
+      s.onload = ok;
+      s.onerror = () => no(new Error('QR 도구를 불러오지 못했어요. 링크 복사를 써 주세요.'));
+      document.head.append(s);
+    });
+  }
+  const q = window.qrcode(0, 'M');
+  q.addData(text);
+  q.make();
+  box.innerHTML = q.createSvgTag({ cellSize: 4, margin: 4, scalable: true, title: '동기화 링크 QR 코드' });
+}
+
+// 확인을 기다리는 이 기기 변경 (충돌, 오래 동기화하지 않음, 연결할 때 이 기기에만 있던 항목)
+const HELD_TEXT = {
+  conflict: '다른 기기에서 먼저 바뀐 항목이 있어 서버 값을 보여 주고 있어요. 이 기기에서 한 변경을 다시 적용할까요?',
+  stale: '이 기기는 오래 동기화하지 않아 서버 목록을 먼저 받았어요. 그동안 이 기기에서만 한 변경을 적용할까요?',
+  link: '이 기기에 있던 목록 중 동기화 목록에 없거나 다른 항목이에요. 동기화 목록에 합칠까요?',
+};
+function renderHeld() {
+  const el = document.getElementById('syncHeld');
+  if (!el) return;
+  const h = sync.conf() && sync.held();
+  if (!h) { el.innerHTML = ''; return; }
+  const local = sync.local();
+  const line = (x) => {
+    const act = !x.v ? '삭제' : !local.has(x.id) ? '추가' : x.v.area && x.v.area !== local.get(x.id).area ? `관심 평형 ${x.v.area}㎡로 변경` : '변경';
+    return `<li>${x.id.startsWith('r:') ? '♥' : '★'} ${esc(x.name)} — ${act}</li>`;
+  };
+  const [yes, no] = h.reason === 'link' ? ['합치기', '합치지 않기'] : ['다시 적용', '서버 값 유지'];
+  el.innerHTML = `<section class="card sync-held">
+    <p style="margin:0"><b>${HELD_TEXT[h.reason] || HELD_TEXT.conflict}</b></p>
+    <ul class="changes">${h.changes.slice(0, 8).map(line).join('')}${h.changes.length > 8 ? `<li class="muted">외 ${h.changes.length - 8}건</li>` : ''}</ul>
+    <div class="row sync-row"><button type="button" class="btn" data-held="apply">${yes}</button><button type="button" class="btn" data-held="discard">${no}</button></div>
+  </section>`;
+  el.querySelector('[data-held="apply"]').addEventListener('click', () => { sync.applyHeld(); route(); });
+  el.querySelector('[data-held="discard"]').addEventListener('click', () => { sync.discardHeld(); renderHeld(); });
+}
+
 async function viewWatch(id) {
   const saved = watch.list();
   const no = state.meta.buildNo;
@@ -1949,15 +2349,18 @@ async function viewWatch(id) {
   }
   const list = watch.list();
   if (!list.length) {
-    app.innerHTML = `<h1>관심단지</h1><section class="card guide"><p style="margin:0 0 4px">아직 관심단지가 없어요. 이렇게 저장해 보세요.</p>${guideSteps()}</section>`;
+    const [held, card] = syncSlots();
+    app.innerHTML = `<h1>관심단지</h1>${held}<section class="card guide"><p style="margin:0 0 4px">아직 관심단지가 없어요. 이렇게 저장해 보세요.</p>${guideSteps()}</section>${card}`;
     bindGuideSearch(app);
+    renderSync();
     return;
   }
   const help = no
     ? "저장한 관심 평형(고르지 않았으면 주력 평형) 기준이에요. 지난번 확인한 뒤의 데이터 갱신에서 처음 확인된 실거래를 '새로 확인'으로 표시해요. 계약일이 지난 거래가 늦게 신고돼도 잡혀요. 단지를 눌러 상세를 보면 확인한 것으로 바뀌어요. '이번 달 · 신고 진행 중' 거래는 새로 확인된 거래로는 보여 주지만, 시세·차트에는 다음 달부터 반영해요."
     : '저장한 관심 평형(고르지 않았으면 주력 평형) 기준이에요. 눌러서 상세를 볼 수 있어요.';
+  const [held, card] = syncSlots();
   app.innerHTML = `<div class="row"><h1>관심단지 ${tip(help)}</h1><span class="spacer"></span>${no ? `<span class="muted" style="font-size:12px">${md(buildDate(no))} 갱신</span><button type="button" class="btn" id="checkAll" hidden>모두 확인</button>` : ''}</div>
-    <div class="watch-grid">${list.map((w, i) => `
+    ${held}<div class="watch-grid">${list.map((w, i) => `
     <div class="card" data-href="#/a/${w.code}/${encodeURIComponent(w.key)}" data-i="${i}" id="w${i}">
       <div class="row"><b>${esc(w.name)}</b><span class="spacer"></span><span class="muted">${esc(w.region)}</span></div>
       <div class="muted">불러오는 중…</div>
@@ -1968,7 +2371,8 @@ async function viewWatch(id) {
       <p class="muted" style="margin:0 0 8px;font-size:12px">6개월 이동평균 · 평형이 달라도 비교할 수 있게 평당가로 맞췄어요${list.length > CMP_MAX ? ` · 처음 ${CMP_MAX}개 단지만 보여요` : ''}</p>
       <div id="cmpLegend"></div>
       <div class="chart-box"><canvas id="cmp"></canvas></div>
-    </div>` : ''}`;
+    </div>` : ''}${card}`;
+  renderSync();
   app.querySelector('.watch-grid').addEventListener('click', (e) => {
     const c = e.target.closest('[data-href]');
     if (!c) return;
