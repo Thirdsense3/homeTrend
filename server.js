@@ -40,7 +40,7 @@ const routes = [
     const [{ yms, rows }, rent] = await Promise.all([getRange('trade', code, months), getRange('rent', code, months)]);
     const { series, indicators } = an.regionSummary(yms, rows, rent.rows);
     indicators.candidate = an.candidateScore(indicators, series);
-    return { code, series: series.slice(-25).map(({ ym, ma, count }) => ({ ym, ma, count })), indicators };
+    return { code, series: series.slice(-25).map(({ ym, ma, count, jeonseMa }) => ({ ym, ma, count, jeonseMa })), indicators };
   }],
 
   // 금리·주택가격 전망 심리 (한국은행 ECOS). 월별 지표라 12시간 동안 메모리에 둔다
