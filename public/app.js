@@ -243,6 +243,8 @@ const phaseChip = (p) => (p ? `<span class="phase" title="${esc(p.note)}"><b>${p
 // 관심단지 (브라우저 저장). checked: 마지막으로 확인한 데이터 빌드 번호(meta.buildNo)
 // → 그 뒤 빌드에서 처음 확인된 거래를 '새로 확인된 거래'로 표시한다 (계약일이 지난 거래가 늦게 신고돼도 잡힌다)
 // 예전 seen(마지막으로 본 계약일)은 버리고, 전환 뒤 첫 방문의 빌드부터 다시 센다 (adopt)
+// area: 관심 평형(A.areaKey 값). 없으면 주력 평형으로 요약한다
+const isArea = (a) => typeof a === 'string' && /^\d+(\.\d+)?$/.test(a);
 const watch = {
   list() {
     try {
@@ -254,21 +256,34 @@ const watch = {
         const key = A.canonicalKey(w.code, w.key, w.jibun ? [{ dong: w.key.split('|')[0], apt: w.key.split('|').slice(1).join('|'), jibun: w.jibun }] : state.complexes?.[w.code]);
         const old = merged.get(`${w.code}:${key}`);
         const checked = [old?.checked, w.checked].filter(Number.isInteger);
-        merged.set(`${w.code}:${key}`, { ...w, key, name: key.split('|').slice(1).join('|'), checked: checked.length ? Math.min(...checked) : undefined });
+        const area = isArea(w.area) ? w.area : isArea(old?.area) ? old.area : undefined;
+        merged.set(`${w.code}:${key}`, { ...w, key, name: key.split('|').slice(1).join('|'), checked: checked.length ? Math.min(...checked) : undefined, area });
       }
       return [...merged.values()];
     } catch (_) { return []; }
   },
   save(l) { try { localStorage.setItem('homeTrend.watch', JSON.stringify(l)); } catch (_) { /* 저장 불가 */ } },
-  has(code, key) { key = A.canonicalKey(code, key, state.complexes?.[code]); return this.list().some((w) => w.code === code && w.key === key); },
+  get(code, key) { key = A.canonicalKey(code, key, state.complexes?.[code]); return this.list().find((w) => w.code === code && w.key === key) || null; },
+  has(code, key) { return !!this.get(code, key); },
   toggle(item) {
     item = { ...item, key: A.canonicalKey(item.code, item.key, state.complexes?.[item.code]), checked: state.meta?.buildNo || undefined };
     let l = this.list();
     l = this.has(item.code, item.key) ? l.filter((w) => !(w.code === item.code && w.key === item.key)) : [...l, item];
     this.save(l);
     const on = this.has(item.code, item.key);
-    metrics.track(on ? 'watch_add' : 'watch_remove', { n: this.list().length });
+    // a: 관심 평형까지 골라 저장했는지 (어떤 평형인지는 보내지 않는다)
+    metrics.track(on ? 'watch_add' : 'watch_remove', { n: this.list().length, ...(on && { a: item.area ? 1 : 0 }) });
     return on;
+  },
+  // 관심 평형 저장·변경 (저장된 단지만)
+  setArea(code, key, area) {
+    key = A.canonicalKey(code, key, state.complexes?.[code]);
+    const l = this.list();
+    const w = l.find((x) => x.code === code && x.key === key);
+    if (!w || w.area === area) return;
+    w.area = area;
+    this.save(l);
+    metrics.track('watch_area');
   },
   // 확인 표시: 이 빌드까지 들어온 거래는 본 것으로 한다 (code 없이 부르면 전체)
   markChecked(code, key, no) {
@@ -1098,7 +1113,7 @@ async function renderFeed(group, id) {
   // 관심단지 중 아직 확인하지 않은 새 거래 (관심단지 화면과 같은 기준: 마지막 확인 빌드 뒤).
   // 피드 파일은 지역마다 일부 거래만 담으므로 건수 대신 있는지만 알린다
   const watched = watch.list();
-  const mineNew = news.some((x) => watched.some((w) => w.code === x.code && w.key === x.key && x.b > (w.checked ?? state.meta.buildNo)));
+  const mineNew = news.some((x) => watched.some((w) => w.code === x.code && w.key === x.key && x.b > (w.checked ?? state.meta.buildNo) && (!w.area || A.areaKey(x.area) === w.area)));
   const watchLine = mineNew ? `<p><a href="#/watch">관심단지에 새로 확인된 거래가 있어요 →</a></p>` : '';
   const foot = notes.length ? `<p class="muted" style="font-size:12px;margin:8px 0 0">${notes.join(' · ')}</p>` : '';
   // 건수는 지역별 집계로 센다 (피드 파일의 거래 목록은 지역마다 눈에 띄는 거래와 최근 계약 일부만 담는다)
@@ -1131,12 +1146,51 @@ async function renderFeed(group, id) {
   </div>`;
 }
 
+// ---------- 첫 방문 안내: 검색 → 단지 선택 → 관심 평형 저장 → 요약 확인 ----------
+// 관심단지가 하나도 없을 때 개요 위에 보여 준다. 닫으면 이 브라우저에서는 다시 띄우지 않는다
+const guide = {
+  off() { try { return localStorage.getItem('homeTrend.guideOff') === '1'; } catch (_) { return false; } },
+  close() { try { localStorage.setItem('homeTrend.guideOff', '1'); } catch (_) { /* 저장 불가 */ } },
+};
+function guideSteps() {
+  return `<ol class="steps">
+    <li><b>단지 검색</b><span>아파트 이름이나 동네 이름으로 찾아요. <button type="button" class="btn" data-guide-search>검색하기</button></span></li>
+    <li><b>평형 고르고 ★ 저장</b><span>단지 화면에서 전용면적을 고르고 ★를 눌러요. 고를 수 있는 면적은 실제 거래가 있었던 면적이에요.</span></li>
+    <li><b>관심단지에서 확인</b><span>저장한 평형의 시세와 새로 확인된 거래·신고가를 한 화면에서 봐요. 데이터는 매일 갱신돼요.</span></li>
+  </ol>
+  <p class="muted" style="font-size:12px;margin:8px 0 0">가입·로그인 없이 이 브라우저에 저장돼요.</p>`;
+}
+// 안내 안의 '검색하기': 상단 검색창으로
+function bindGuideSearch(root) {
+  root.querySelector('[data-guide-search]')?.addEventListener('click', () => {
+    metrics.track('guide', { k: 'search' });
+    window.scrollTo(0, 0);
+    document.getElementById('gq').focus();
+  });
+}
+function renderGuide() {
+  const el = document.getElementById('guide');
+  if (!el || watch.list().length || guide.off()) return;
+  el.innerHTML = `<section class="card guide">
+    <div class="row"><h2 style="margin:0">처음이라면 관심단지부터 저장해 보세요</h2><span class="spacer"></span><button type="button" class="pop-x" data-guide-close aria-label="안내 닫기">×</button></div>
+    ${guideSteps()}
+  </section>`;
+  bindGuideSearch(el);
+  el.querySelector('[data-guide-close]').addEventListener('click', () => {
+    guide.close();
+    metrics.track('guide', { k: 'close' });
+    el.innerHTML = '';
+  });
+  metrics.track('guide', { k: 'show' });
+}
+
 async function viewOverview(group, id) {
   const regions = state.meta.regions.filter((r) => r.group === group);
   // 지난번에 실패한 지역은 다시 시도
   regions.forEach((r) => { if (state.overview[r.code]?.error) delete state.overview[r.code]; });
   app.innerHTML = `
     <h1>${esc(group)} 지역별 시세 트렌드 ${tip('실거래 평당가의 3개월 이동평균 기준 (단지 구성 보정, 신고 진행 중인 지난달·통매각 같은 일괄 거래 제외). 거래량은 최근 3개월을 36개월 평균과 비교해요. 신고가 비율은 최근 3개월 거래 중 같은 단지·평형의 이전 최고가를 넘은 거래 비중으로, 시장이 달아오르면 가장 먼저 올라가요.')}</h1>
+    <div id="guide"></div>
     <div id="feed"></div>
     <div class="card region-filter"><label>구·시 찾기 <input id="regionQuery" type="search" placeholder="예: 성북구"></label>
       <label><input type="checkbox" id="likedRegions"> 좋아요한 지역만</label>
@@ -1153,6 +1207,7 @@ async function viewOverview(group, id) {
     </div>
     <div id="macro"></div>
     <div class="card"><div class="row"><h2 style="margin:0">지역별 지표</h2><span class="spacer"></span><span id="ovSort"></span></div><div class="table-wrap mcards"><table><thead></thead><tbody></tbody></table></div></div>`;
+  renderGuide();
   renderMacro(id);
   renderFeed(group, id);
 
@@ -1664,8 +1719,9 @@ async function viewApt(code, key, id) {
   const { apt } = d;
   key = apt.key;
   const areaKey = `${code}:${key}`; // 다른 구에 같은 동·단지명이 있을 수 있어 지역 코드까지 포함
-  let areaSel = state.aptArea?.[areaKey] || d.areas[0].area;
-  if (!d.areas.some((a) => a.area === areaSel)) areaSel = d.areas[0].area;
+  // 이번 방문에서 고른 평형 → 저장한 관심 평형 → 주력 평형 순
+  const has = (a) => d.areas.some((x) => x.area === a);
+  let areaSel = [state.aptArea?.[areaKey], watch.get(code, key)?.area].find(has) || d.areas[0].area;
 
   // 네이버는 통합검색의 부동산 박스(매물 수·호가)가 가장 확실하고, 호갱노노는 단지명 검색을 URL로 받는다.
   // KB·국토부는 검색어를 URL로 넘길 수 없어 클릭할 때 단지명을 복사해 붙여넣게 한다
@@ -1676,7 +1732,7 @@ async function viewApt(code, key, id) {
     <div class="crumb"><a href="#/g/${esc(region.group)}">${esc(region.group)}</a> › <a href="#/r/${code}">${esc(region.name)}</a> ›</div>
     <div class="row">
       <h1>${esc(apt.name)}</h1>
-      <button class="star ${watch.has(code, key) ? 'on' : ''}" id="star" title="관심단지에 좋아요 (이 브라우저에 저장)" style="font-size:22px">★</button>
+      <button class="star ${watch.has(code, key) ? 'on' : ''}" id="star" title="관심단지에 저장 (지금 고른 평형을 관심 평형으로, 이 브라우저에 저장)" style="font-size:22px">★</button>
       <span class="muted">${esc(apt.dong)} ${esc(apt.jibun)} · ${apt.built || '–'}년 준공</span>
       <span class="spacer"></span>${monthsSeg(months, opts)}
     </div>
@@ -1688,7 +1744,8 @@ async function viewApt(code, key, id) {
       <span class="muted" id="copied" style="font-size:12px"></span>
     </p>
     <div class="row" style="margin-bottom:16px"><span class="muted">전용면적</span><div class="seg" id="areas">${d.areas.map((a) => `<button data-a="${a.area}" class="${a.area === areaSel ? 'on' : ''}">${a.area}㎡ <span class="muted">(${a.partialOnly ? `이번 달 ${a.partialCount}건 · 신고 진행 중` : `매매 ${a.count}건${a.partialCount ? ` · 이번 달 ${a.partialCount}건` : ''}`})</span></button>`).join('')}</div></div>
-    <p class="muted">조회 기간에 매매 또는 전세 거래가 있는 전용면적입니다. 원본 면적을 소수 둘째 자리까지 구분합니다.${d.areas.some((a) => a.partialCount) ? ' 매매 건수는 지난달까지이고, 이번 달(신고 진행 중) 거래는 따로 셉니다.' : ''}${A.apartmentNames(code, apt.dong, apt.name, apt.jibun).length > 1 ? ` 원본 명칭: ${esc(A.apartmentNames(code, apt.dong, apt.name, apt.jibun).filter((n) => n !== apt.name).join(', '))}` : ''}</p><div id="areaView"></div>`;
+    <p class="watch-note" id="watchNote"></p>
+    <p class="muted">조회 기간에 매매 또는 전세 거래가 있는 전용면적이에요. 거래가 없던 면적은 고를 수 없고, 조회 기간을 늘리면 더 오래전에 거래된 면적도 보여요. 원본 면적을 소수 둘째 자리까지 구분합니다.${d.areas.some((a) => a.partialCount) ? ' 매매 건수는 지난달까지이고, 이번 달(신고 진행 중) 거래는 따로 셉니다.' : ''}${A.apartmentNames(code, apt.dong, apt.name, apt.jibun).length > 1 ? ` 원본 명칭: ${esc(A.apartmentNames(code, apt.dong, apt.name, apt.jibun).filter((n) => n !== apt.name).join(', '))}` : ''}</p><div id="areaView"></div>`;
   bindMonths(monthView);
   app.querySelectorAll('.copy-name').forEach((a) => a.addEventListener('click', () => {
     navigator.clipboard?.writeText(apt.name).then(() => {
@@ -1696,15 +1753,33 @@ async function viewApt(code, key, id) {
     }, () => {});
   }));
   watch.markChecked(code, key, state.meta.buildNo); // 단지 화면을 열면 새로 확인된 거래 표시를 지운다
-  document.getElementById('star').addEventListener('click', (e) => {
-    e.target.classList.toggle('on', watch.toggle({ code, key, name: apt.name, jibun: apt.jibun, region: region.name }));
+  // 관심 평형 안내: 저장 전에는 ★가 지금 고른 평형으로 저장된다고, 저장 뒤에는 관심 평형과 요약 화면 링크를 보여 준다
+  const note = document.getElementById('watchNote');
+  const renderWatch = () => {
+    const w = watch.get(code, key);
+    document.getElementById('star').classList.toggle('on', !!w);
+    document.querySelectorAll('#areas button').forEach((x) => x.classList.toggle('saved', !!w && x.dataset.a === w.area));
+    const sel = `<b>${areaSel}㎡</b>`;
+    const toWatch = '<a href="#/watch">관심단지에서 요약 보기 →</a>';
+    note.innerHTML = !w
+      ? `★를 누르면 ${sel}를 관심 평형으로 관심단지에 저장해요. 관심단지에서 이 평형의 시세와 새로 확인된 거래를 모아 봐요. 가입 없이 이 브라우저에 저장돼요.`
+      : w.area === areaSel
+        ? `<span class="star on" aria-hidden="true">★</span> 관심 평형 ${sel}로 저장했어요. ${toWatch}`
+        : `<span class="star on" aria-hidden="true">★</span> ${w.area ? `관심 평형은 <b>${w.area}㎡</b>예요` : '관심 평형을 고르지 않아 주력 평형으로 요약해요'}. <button type="button" class="btn" id="setArea">${areaSel}㎡를 관심 평형으로</button> ${toWatch}`;
+    document.getElementById('setArea')?.addEventListener('click', () => { watch.setArea(code, key, areaSel); renderWatch(); });
+  };
+  document.getElementById('star').addEventListener('click', () => {
+    watch.toggle({ code, key, name: apt.name, jibun: apt.jibun, region: region.name, area: areaSel });
+    renderWatch();
   });
   document.querySelectorAll('#areas button').forEach((b) => b.addEventListener('click', () => {
     areaSel = b.dataset.a;
     state.aptArea = { ...(state.aptArea || {}), [areaKey]: areaSel };
     document.querySelectorAll('#areas button').forEach((x) => x.classList.toggle('on', x === b));
+    renderWatch();
     renderArea();
   }));
+  renderWatch();
 
   function renderArea() {
     destroyCharts();
@@ -1778,7 +1853,7 @@ async function viewApt(code, key, id) {
 }
 
 // ---------- 개인정보처리방침 ----------
-const PRIVACY_UPDATED = '2026-10-16';
+const PRIVACY_UPDATED = '2026-10-22';
 function viewPrivacy() {
   const on = metrics.available();
   app.innerHTML = `<article class="card prose">
@@ -1789,14 +1864,14 @@ function viewPrivacy() {
 
     <h2>브라우저에만 저장하는 것</h2>
     <ul>
-      <li>관심단지(★), 좋아요한 지역(♥), 테마, 화면 설정 — 서버로 보내지 않아요.</li>
+      <li>관심단지(★)와 관심 평형, 좋아요한 지역(♥), 테마, 화면 설정(첫 방문 안내를 닫았는지 포함) — 서버로 보내지 않아요.</li>
       <li>무작위 기기 ID와 첫 방문 시각 — 측정에 써요(아래).</li>
     </ul>
 
     <h2>측정을 위해 보내는 것</h2>
     <ul>
       <li><b>무작위 기기 ID</b>: 이 브라우저에서 처음 만든 임의의 값이에요. 사람이나 기기 정보와 연결되지 않고, 다른 브라우저·기기와 공유되지 않아요.</li>
-      <li><b>행동 종류</b>: 방문, 화면 종류(개요·지역·단지·관심단지), 검색 결과 선택(지역인지 단지인지만), 관심단지 추가·삭제와 개수, 관심단지의 새 거래 유무·건수와 확인 여부.</li>
+      <li><b>행동 종류</b>: 방문, 화면 종류(개요·지역·단지·관심단지), 검색 결과 선택(지역인지 단지인지만), 관심단지 추가·삭제와 개수, 관심 평형을 골랐는지 여부(어떤 평형인지는 보내지 않아요), 첫 방문 안내를 보거나 닫거나 검색을 시작했는지, 관심단지의 새 거래 유무·건수와 확인 여부.</li>
       <li><b>첫 방문 시각, 모바일 여부</b>, 서버가 받은 시각, 측정 방식 버전.</li>
     </ul>
 
@@ -1874,12 +1949,13 @@ async function viewWatch(id) {
   }
   const list = watch.list();
   if (!list.length) {
-    app.innerHTML = `<h1>관심단지</h1><div class="card muted">아직 관심단지가 없어요. 지역 화면의 단지 목록이나 단지 화면에서 ★를 눌러 추가하세요.</div>`;
+    app.innerHTML = `<h1>관심단지</h1><section class="card guide"><p style="margin:0 0 4px">아직 관심단지가 없어요. 이렇게 저장해 보세요.</p>${guideSteps()}</section>`;
+    bindGuideSearch(app);
     return;
   }
   const help = no
-    ? "주력 평형 기준이에요. 지난번 확인한 뒤의 데이터 갱신에서 처음 확인된 실거래를 '새로 확인'으로 표시해요. 계약일이 지난 거래가 늦게 신고돼도 잡혀요. 단지를 눌러 상세를 보면 확인한 것으로 바뀌어요. '이번 달 · 신고 진행 중' 거래는 새로 확인된 거래로는 보여 주지만, 시세·차트에는 다음 달부터 반영해요."
-    : '주력 평형 기준이에요. 눌러서 상세를 볼 수 있어요.';
+    ? "저장한 관심 평형(고르지 않았으면 주력 평형) 기준이에요. 지난번 확인한 뒤의 데이터 갱신에서 처음 확인된 실거래를 '새로 확인'으로 표시해요. 계약일이 지난 거래가 늦게 신고돼도 잡혀요. 단지를 눌러 상세를 보면 확인한 것으로 바뀌어요. '이번 달 · 신고 진행 중' 거래는 새로 확인된 거래로는 보여 주지만, 시세·차트에는 다음 달부터 반영해요."
+    : '저장한 관심 평형(고르지 않았으면 주력 평형) 기준이에요. 눌러서 상세를 볼 수 있어요.';
   app.innerHTML = `<div class="row"><h1>관심단지 ${tip(help)}</h1><span class="spacer"></span>${no ? `<span class="muted" style="font-size:12px">${md(buildDate(no))} 갱신</span><button type="button" class="btn" id="checkAll" hidden>모두 확인</button>` : ''}</div>
     <div class="watch-grid">${list.map((w, i) => `
     <div class="card" data-href="#/a/${w.code}/${encodeURIComponent(w.key)}" data-i="${i}" id="w${i}">
@@ -1887,7 +1963,7 @@ async function viewWatch(id) {
       <div class="muted">불러오는 중…</div>
     </div>`).join('')}</div>
     ${list.length > 1 ? `<div class="card" style="margin-top:16px">
-      <div class="row" style="margin-bottom:8px"><h2 style="margin:0">단지 비교 — 주력 평형</h2><span class="spacer"></span>
+      <div class="row" style="margin-bottom:8px"><h2 style="margin:0">단지 비교 — 관심 평형</h2><span class="spacer"></span>
         <div class="seg" id="cmpMode"><button data-m="ppy" class="on">평당가</button><button data-m="idx">상승률 (3년 전 = 100)</button></div></div>
       <p class="muted" style="margin:0 0 8px;font-size:12px">6개월 이동평균 · 평형이 달라도 비교할 수 있게 평당가로 맞췄어요${list.length > CMP_MAX ? ` · 처음 ${CMP_MAX}개 단지만 보여요` : ''}</p>
       <div id="cmpLegend"></div>
@@ -1907,8 +1983,10 @@ async function viewWatch(id) {
   await Promise.all(list.map(async (w, i) => {
     const el = document.getElementById(`w${i}`);
     const since = w.checked ?? no;
+    // 관심 평형을 저장했으면 변화(새 거래·신고가·급등·삭제)는 그 평형만 센다
+    const inArea = (t) => !w.area || A.areaKey(t.area) === w.area;
     // 사라진 거래(해제·정정)와 급등은 최근 30일 변화 목록에서 찾는다. 남은 거래가 없는 단지도 삭제 내역은 보여 준다
-    const mine = (recent?.items || []).filter((x) => x.code === w.code && x.key === w.key && x.b > since);
+    const mine = (recent?.items || []).filter((x) => x.code === w.code && x.key === w.key && x.b > since && inArea(x));
     const gone = mine.filter((x) => x.type === 'del').sort((a, b) => b.date.localeCompare(a.date));
     const surge = mine.filter((x) => x.type === 'surge');
     const goneLines = [
@@ -1932,7 +2010,9 @@ async function viewWatch(id) {
     }
     try {
       if (isStale(id)) return;
-      const main = d.areas[0];
+      // 관심 평형이 최근 3년 매매에 없으면(전세만 있거나 이번 달에만 있거나 오래전 거래만 있음) 주력 평형으로 요약한다
+      const picked = w.area && d.areas.find((a) => a.area === w.area && !a.partialOnly && a.count > 0);
+      const main = picked || d.areas[0];
       const tr = d.trades.filter((t) => !t.bulk && A.areaKey(t.area) === main.area);
       const recentPrice = median(tr.slice(-3).map((t) => t.price));
       const market = d.trades.filter((t) => !t.bulk);
@@ -1940,7 +2020,8 @@ async function viewWatch(id) {
       const withCur = [...market, ...d.partial.filter((t) => !t.bulk)];
       // 새로 확인된 거래: 마지막으로 확인한 빌드 뒤에 처음 확인된 거래. 확인 기록이 없으면 지금 빌드부터 센다
       const isFresh = (t) => no && t.firstSeen > since;
-      const fresh = withCur.filter(isFresh).sort((a, b) => b.date.localeCompare(a.date));
+      const fresh = withCur.filter((t) => isFresh(t) && inArea(t)).sort((a, b) => b.date.localeCompare(a.date));
+      const otherFresh = withCur.filter((t) => isFresh(t) && !inArea(t)).length;
       // 신고가: 같은 평형에서 확인 시점까지 본 거래의 최고가를 넘은 새 거래. 이전 거래가 없는 평형은 세지 않는다.
       // 이 지역 매매 수집에 실패한 달이 있으면 이전 최고가가 빠졌을 수 있어 판정하지 않는다 (빌드의 tradeChanges와 같은 기준)
       const complete = !tradeMissing(w.code);
@@ -1952,23 +2033,27 @@ async function viewWatch(id) {
       const high = fresh.filter(isHigh);
       const badges = `${fresh.length ? `<span class="tag new">새로 확인 ${fresh.length}건</span>` : ''}${high.length ? `<span class="tag high">신고가 ${high.length}건</span>` : ''}${surge.length ? `<span class="tag high">급등</span>` : ''}${gone.length ? `<span class="tag">삭제 ${gone.length}건</span>` : ''}`;
       if (fresh.length) { el.dataset.fresh = fresh.length; changed.push(fresh.length); }
-      if (fresh.length || gone.length) document.getElementById('checkAll')?.removeAttribute('hidden');
+      if (fresh.length || otherFresh || gone.length) document.getElementById('checkAll')?.removeAttribute('hidden');
       const lines = [
         ...fresh.slice(0, 3).map((t) => `<li>${tradeLine(t)}${isHigh(t) ? ' <span class="tag high">신고가</span>' : ''}${t.kind === '직거래' ? ' <span class="tag">직거래</span>' : ''}${t.partial ? ` ${partialTag}` : ''}</li>`),
         fresh.length > 3 ? `<li class="muted">외 ${fresh.length - 3}건</li>` : '',
         ...surge.slice(0, 1).map((x) => `<li><span class="up">급등</span> ${x.area}㎡ · ${surgeBasis(x.basis)} <span class="muted">(${SURGE_NOTE})</span></li>`),
         ...goneLines,
         fresh.length && !complete ? '<li class="muted">일부 달의 매매를 받지 못해 신고가는 판정하지 않았어요</li>' : '',
+        otherFresh ? `<li class="muted">다른 평형에서 새로 확인 ${otherFresh}건</li>` : '',
       ].filter(Boolean);
-      const last = withCur.reduce((a, b) => (b.date > a.date ? b : a));
+      // 최근 계약도 요약한 평형 기준 (그 평형 거래가 모두 일괄 거래면 단지 전체)
+      const sameArea = withCur.filter((t) => A.areaKey(t.area) === main.area);
+      const last = (sameArea.length ? sameArea : withCur).reduce((a, b) => (b.date > a.date ? b : a));
       if (i < CMP_MAX) cmp[i] = { name: w.name, series: main.series.map((r) => ({ ym: r.ym, v: r.ma == null ? null : r.ma / (Number(main.area) / PYEONG) })) };
       el.innerHTML = `
         <div class="row"><b>${esc(w.name)}</b>${badges}<span class="spacer"></span><span class="muted">${esc(w.region)}</span></div>
-        <div class="row" style="margin-top:8px"><span class="num" style="font-size:20px;font-weight:600">${fmtEok(recentPrice)}</span><span class="muted">${main.area}㎡</span><span class="spacer"></span>${sparkline(main.series.map((s) => s.ma), 100, 28)}</div>
+        <div class="row" style="margin-top:8px"><span class="num" style="font-size:20px;font-weight:600">${fmtEok(recentPrice)}</span><span class="muted">${main.area}㎡ ${picked ? '관심 평형' : '주력 평형'}</span><span class="spacer"></span>${sparkline(main.series.map((s) => s.ma), 100, 28)}</div>
+        ${w.area && !picked ? `<div class="muted" style="font-size:12px">관심 평형 ${w.area}㎡은 최근 3년 매매가 없어 주력 평형으로 보여요</div>` : ''}
         <div class="row" style="font-size:12px;margin-top:6px">최고가 대비 ${delta(recentPrice / main.maxPrice - 1)} · 전세가율 ${fmtPct(main.indicators.jeonseRatio, 0)}</div>
         <div style="margin-top:6px">${phaseChip(main.indicators.phase)}</div>
         ${lines.length ? `<ul class="changes">${lines.join('')}</ul>` : ''}
-        <div class="muted" style="font-size:12px;margin-top:6px">최근 계약 ${fmtDate(last.date)}${last.partial ? ' (이번 달 · 신고 진행 중)' : ''}${checkedLine ? ` · ${checkedLine}` : ''}${no && !lines.length ? ' · 새로 확인된 거래 없음' : ''}</div>`;
+        <div class="muted" style="font-size:12px;margin-top:6px">${sameArea.length ? `${main.area}㎡ ` : ''}최근 계약 ${fmtDate(last.date)}${last.partial ? ' (이번 달 · 신고 진행 중)' : ''}${checkedLine ? ` · ${checkedLine}` : ''}${no && !lines.length ? ' · 새로 확인된 거래 없음' : ''}</div>`;
     } catch (e) {
       if (!isStale(id)) el.querySelector(':scope > .muted').textContent = `오류: ${e.message}`;
     }

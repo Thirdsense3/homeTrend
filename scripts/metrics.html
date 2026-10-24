@@ -92,6 +92,7 @@ app.innerHTML = `
   <div class="kpis">
     ${kpi('하루 방문 기기', recent.length ? Math.round(sum(recent, (n) => n) / recent.length).toLocaleString() : '–', undefined, recent.length ? `${md(shift(DATA.through, 1 - recent.length))}~${md(DATA.through)} ${recent.length}일 평균` : '아직 집계 없음')}
     ${kpi('활성화', sum(activation, (r) => r.activated), sum(activation, (r) => r.devices), '첫 방문 24시간 안에 관심단지 저장 + 요약 확인')}
+    ${kpi('활성화 (평형까지)', sum(activation, (r) => r.area?.activated), sum(activation, (r) => r.area?.devices), '관심 평형까지 저장 + 요약 확인. 관심 평형 도입 뒤 처음 온 기기만')}
     ${kpi('핵심 재방문 (1주)', w1.r, w1.e, '활성화 후 7~13일에 관심단지 변화 확인. 이 기간에 관찰이 끝난 기기')}
     ${kpi('핵심 재방문 (4주)', w4.r, w4.e, '활성화 후 28~34일. 이 기간에 관찰이 끝난 기기')}
     ${kpi('변화 확인', sum(daily, (d) => d.change.opened), sum(daily, (d) => d.change.available), '새 거래가 있던 날 상세를 연 기기 (기기·일)')}
@@ -122,7 +123,7 @@ function segTable() {
 
 function dailyTable() {
   if (!daily.length) return '<div class="empty">아직 집계된 날짜가 없어요</div>';
-  const COLS = [['visit', '방문'], ['view_watch', '관심단지 확인'], ['watch_add', '관심 추가'], ['watch_remove', '관심 삭제'], ['search', '검색'], ['view_region', '지역 화면'], ['view_apt', '단지 화면'], ['view_privacy', '방침 확인']];
+  const COLS = [['visit', '방문'], ['view_watch', '관심단지 확인'], ['watch_add', '관심 추가'], ['watch_remove', '관심 삭제'], ['watch_area', '평형 저장'], ['guide', '첫 방문 안내'], ['search', '검색'], ['view_region', '지역 화면'], ['view_apt', '단지 화면'], ['view_privacy', '방침 확인']];
   return `<table><thead><tr><th>날짜</th><th>기기</th><th>모바일</th>${COLS.map(([, l]) => `<th>${l}</th>`).join('')}<th>변화 확인</th></tr></thead><tbody>
     ${[...daily].reverse().map((d) => `<tr><td>${d.sk}</td><td>${d.devices}</td><td>${pct(d.mobile, d.devices)}</td>
       ${COLS.map(([k]) => `<td>${d.acts[k] || 0}</td>`).join('')}<td>${d.change.available ? `${d.change.opened}/${d.change.available}` : '–'}</td></tr>`).join('')}</tbody></table>`;

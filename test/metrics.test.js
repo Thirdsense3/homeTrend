@@ -22,6 +22,20 @@ test('허용된 이벤트와 값만 받고 검색어·단지 이름은 버린다
   ]);
 });
 
+test('관심 평형·첫 방문 안내: 저장 여부와 안내 행동 종류만 받는다', async () => {
+  const m = await load();
+  const b = m.parseBatch(JSON.stringify({ d: DEV, e: [
+    { id: ID(1), type: 'watch_add', p: { n: 1, a: 1, area: '84.97' } },
+    { id: ID(2), type: 'watch_add', p: { n: 2, a: 2 } },
+    { id: ID(3), type: 'watch_area', p: { area: '59.9' } },
+    { id: ID(4), type: 'guide', p: { k: 'search' } },
+    { id: ID(5), type: 'guide', p: { k: 'open' } },
+  ] }), NOW);
+  assert.deepEqual(b.events.map((e) => [e.type, e.props]), [
+    ['watch_add', { n: 1, a: 1 }], ['watch_add', { n: 2 }], ['watch_area', {}], ['guide', { k: 'search' }], ['guide', {}],
+  ]);
+});
+
 test('형식이 틀린 요청은 거부한다', async () => {
   const m = await load();
   const bad = (o) => assert.throws(() => m.parseBatch(typeof o === 'string' ? o : JSON.stringify(o), NOW), m.BadRequest);
@@ -65,7 +79,22 @@ test('활성화: 24시간 관찰이 끝난 신규 기기만 분모, 측정 이�
   assert.equal(act[0].sk, '2026-10-13');
   assert.deepEqual([act[0].devices, act[0].activated], [2, 1]);
   assert.deepEqual(act[0].mobile, { devices: 1, activated: 1 });
+  assert.deepEqual(act[0].area, { devices: 0, activated: 0 }); // firstV가 없는 기기는 평형 지표 분모에서 뺀다
   assert.equal(act[0].v, m.VERSION);
+});
+
+test('평형까지 저장한 활성화: 버전 2부터 처음 온 기기만 분모, 기존 활성화는 그대로', async () => {
+  const m = await load();
+  const fs = iso(NOW - 3 * m.DAY);
+  const rows = m.aggregate([
+    summary(1, { firstSeen: fs, firstV: 2, activatedAt: fs, activatedAreaAt: fs }),
+    summary(2, { firstSeen: fs, firstV: 2, activatedAt: fs }), // 단지만 저장
+    summary(3, { firstSeen: fs, firstV: 2 }),
+    summary(4, { firstSeen: fs, activatedAt: fs }), // 버전 1 기기
+  ], NOW);
+  const act = rows.find((r) => r.pk === 'agg#activation');
+  assert.deepEqual([act.devices, act.activated], [4, 3]);
+  assert.deepEqual(act.area, { devices: 3, activated: 1 });
 });
 
 test('핵심 재방문: 구간이 끝난 기기만 분모, 7~13일 안의 확인만 재방문', async () => {
