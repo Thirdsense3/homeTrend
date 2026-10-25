@@ -7,6 +7,7 @@ const an = require('./lib/analyze');
 const { pack } = require('./lib/pack');
 const { getMacro } = require('./lib/ecos');
 const { getReb } = require('./lib/reb');
+const policies = require('./lib/policies');
 const regions = require('./data/regions.json');
 
 const PORT = Number(process.env.PORT) || 3000;
@@ -73,6 +74,9 @@ const routes = [
     searchCache = { at: Date.now(), data };
     return data;
   }],
+
+  // 정책 자료 (data/policies.json). 고친 내용이 바로 보이게 매번 읽고 검사한다
+  [/^\/api\/policies$/, async () => policies.validate(JSON.parse(fs.readFileSync(path.join(__dirname, 'data', 'policies.json'), 'utf8')), regions)],
 
   // 지역 원본 데이터(압축). 지역·단지 화면의 계산은 브라우저(analyze.js)에서 한다
   [/^\/api\/raw\/(\d{5})$/, async ([code], q) => {

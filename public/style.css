@@ -65,9 +65,9 @@ a { color: inherit; }
   overflow-x: clip; /* 로딩 막대는 자르고, 검색 목록은 아래로 펼쳐지게 */
 }
 .brand { font-weight: 700; font-size: 17px; text-decoration: none; }
-.tabs { display: flex; gap: 4px; }
+.tabs { display: flex; gap: 4px; flex-shrink: 0; } /* 좁아지면 검색창이 먼저 줄어들게 */
 .tabs a {
-  padding: 6px 12px; border-radius: 8px; text-decoration: none; color: var(--ink-2);
+  padding: 6px 12px; border-radius: 8px; text-decoration: none; color: var(--ink-2); white-space: nowrap;
 }
 .tabs a:hover { background: var(--accent-wash); }
 .tabs a.on { background: var(--accent-wash); color: var(--ink); font-weight: 600; }
@@ -75,6 +75,7 @@ a { color: inherit; }
   font-size: 12px; white-space: nowrap; padding: 3px 10px; border-radius: 999px;
   border: 1px solid var(--border); color: var(--ink-2);
 }
+.top .deal { flex-shrink: 0; }
 .top .deal button { padding: 5px 10px; white-space: nowrap; }
 .badge.demo { border-color: var(--series-2); color: var(--series-2); }
 
@@ -373,3 +374,18 @@ ul.changes a { color: var(--series-1); text-decoration: none; }
 .sync-msg:empty { display: none; }
 .sync details summary { cursor: pointer; font-size: 13px; color: var(--ink-2); }
 .sync-held { margin-bottom: 16px; border-color: var(--series-4); }
+
+/* 정책 타임라인 (로드맵 9번) */
+.pol-mark { font-size: 9px; color: var(--ink-2); }
+#polRegion { font: inherit; color: var(--ink); background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; max-width: 100%; }
+.chips button:not(.on) .pol-mark { opacity: 0.3; }
+.chips button .pol-mark { margin-right: 6px; }
+.timeline { list-style: none; margin: 0; padding: 0; }
+.timeline .tl-year { font-weight: 700; font-size: 15px; padding: 12px 0 4px; border-bottom: 1px solid var(--border); }
+.timeline .tl-year:first-child { padding-top: 0; }
+.timeline .tl-item { display: grid; grid-template-columns: 56px minmax(0, 1fr); gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--border); }
+.timeline .tl-item:last-child { border-bottom: 0; }
+.timeline .tl-date { color: var(--muted); padding-top: 1px; }
+.timeline .tl-body p { margin: 4px 0; line-height: 1.6; }
+.timeline .tl-meta { font-size: 12px; }
+.timeline .tl-body .tag:first-child { margin-left: 0; }

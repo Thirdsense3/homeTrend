@@ -12,6 +12,7 @@ const { getReb } = require('../lib/reb');
 const ledger = require('../lib/ledger');
 const ch = require('../lib/changes');
 const { kstNow } = require('../lib/kst');
+const policies = require('../lib/policies');
 const regions = require('../data/regions.json');
 
 const ROOT = path.join(__dirname, '..');
@@ -36,6 +37,8 @@ function write(rel, data) {
   const isPartial = (r) => r.date.slice(0, 4) + r.date.slice(5, 7) === partialYm;
   console.log(`빌드: ${mode() === 'live' ? '국토부 API' : '데모 데이터'}, ${yms[0]}~${yms[yms.length - 1]} (${MONTHS}개월), ${regions.length}개 지역`);
   fs.rmSync(DIST, { recursive: true, force: true });
+  // 정책 자료는 사람이 고치는 파일이라 수집 전에 형식부터 검사한다 (틀리면 이전 배포 유지)
+  const policyData = policies.validate(JSON.parse(fs.readFileSync(path.join(ROOT, 'data', 'policies.json'), 'utf8')), regions);
 
   const failures = [];
   let total = 0, bytes = 0;
@@ -114,6 +117,9 @@ function write(rel, data) {
   // 변화 파일: 오늘(KST) 확인된 변화(첫 화면 피드), 최근 30일 변화(삭제된 거래·급등·국면). 다음 빌드가 이어 쓰도록 이력에도 둔다
   let builds = null;
   if (no) {
+    const pol = ch.policyChanges(ledger.readState('policies'), policyData.items, no, today);
+    items.push(...pol.items);
+    ledger.writeState('policies', pol.known);
     const status = continued ? 'ok' : 'bootstrap';
     const feed = ch.mergeFeed(ledger.readState('feed'), { today, no, items, regions: regionStats });
     // lastAdded·lastTrade는 이번 빌드 기준 값으로 덮는다
@@ -127,10 +133,11 @@ function write(rel, data) {
     write('data/changes-30d.json', { v: 1, no, items: recentNext });
     const count = (t) => items.filter((x) => x.type === t).length;
     console.log(status === 'ok'
-      ? `변화: 새로 확인 ${count('new')} · 삭제 ${count('del')} · 급등 ${count('surge')} · 지역 급등 ${count('regionSurge')} · 국면 ${count('phase')}`
+      ? `변화: 새로 확인 ${count('new')} · 삭제 ${count('del')} · 급등 ${count('surge')} · 지역 급등 ${count('regionSurge')} · 국면 ${count('phase')} · 정책 ${count('policy')}`
       : '거래 이력 시작: 지금 있는 거래는 새 거래로 표시하지 않습니다');
   }
 
+  write('data/policies.json', policyData);
   // 전체 단지 검색 목록 (상단 검색창)
   write('data/search.json', { v: 1, regions: search });
   // 수집 누락은 완성된 달만 (이번 달 실패는 지표·예측에 영향이 없다). 이번 달 실패는 meta.partial.missing으로 따로 알린다
