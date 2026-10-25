@@ -43,6 +43,32 @@ test('전세가율은 최근 6개월 평당 전세 중위 ÷ 매매 중위', () 
   assert.ok(Math.abs(ind.jeonseRatio - 0.6) < 0.001);
 });
 
+test('전세 지표: 전세 평당가·전세 거래 수로 매매와 같이 계산하고, 국면·전세가율은 넣지 않는다', () => {
+  const rows = yms.flatMap((ym) => trades(ym, 5000, 5));
+  // 매매는 그대로, 전세는 달마다 2%씩 오르고 9월부터 거래가 두 배
+  const rents = yms.flatMap((ym, i) => trades(ym, 3000 * (1 + 0.02 * i), i >= 8 ? 10 : 5))
+    .map(({ price, ...r }) => ({ ...r, deposit: price, monthly: 0 }));
+  const ind = an.regionSummary(yms, rows, rents).indicators;
+  assert.ok(Math.abs(ind.chg3m) < 0.001);
+  assert.ok(ind.jeonse.chg3m > 0.05);
+  assert.strictEqual(ind.jeonse.fromPeak, 0);
+  assert.strictEqual(ind.jeonse.volRecent, 10);
+  assert.strictEqual(ind.jeonse.volChg, 1);
+  assert.ok(!('phase' in ind.jeonse) && !('jeonseRatio' in ind.jeonse));
+});
+
+test('apartmentList: 전세는 보증금 기준이고 같은 날 몰린 전세(일괄)는 뺀다', () => {
+  const rents = [...trades('202501', 3000, 3), ...trades('202506', 3600, 1), ...trades('202512', 3300, 3)]
+    .map(({ price, ...r }) => ({ ...r, deposit: price, monthly: 0 }));
+  const bulk = Array.from({ length: 12 }, () => ({ dong: '동', apt: 'A', date: '2025-08-11', area: 84, deposit: 100, monthly: 0, floor: 3 }));
+  const [a] = an.apartmentList([...rents, ...bulk], 'deposit', () => true);
+  assert.strictEqual(a.count, 7);
+  assert.strictEqual(a.bulk, 12);
+  assert.strictEqual(a.peakPrice, Math.round(3600 * 84 / PYEONG));
+  assert.strictEqual(a.recentPrice, Math.round(3300 * 84 / PYEONG));
+  assert.ok(Math.abs(a.ppy - 3300) < 1);
+});
+
 test('apartmentList: 주력 평형 기준 최고가 대비', () => {
   const rows = [
     ...trades('202501', 5000, 3), ...trades('202506', 6000, 1), ...trades('202512', 5400, 3),

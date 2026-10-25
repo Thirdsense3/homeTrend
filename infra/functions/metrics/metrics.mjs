@@ -9,7 +9,8 @@
 // 측정 정의 버전. 이벤트·지표 정의를 바꾸면 올리고 집계 행에도 남긴다
 // 2: 관심 평형 저장(watch_add a, watch_area)과 첫 방문 안내(guide), 평형까지 저장한 활성화
 // 3: 동기화 코드(sync). 기존 지표 정의는 그대로
-export const VERSION = 3;
+// 4: 매매/전세 보기(deal, 방문·화면 조회의 j). 기존 지표 정의는 그대로
+export const VERSION = 4;
 export const AREA_VERSION = 2; // 이 버전부터 첫 방문한 기기만 '평형까지 저장한 활성화'의 분모에 넣는다
 export const DAY = 24 * 60 * 60 * 1000;
 export const RAW_TTL_DAYS = 90;
@@ -28,11 +29,12 @@ const buildId = (v) => (typeof v === 'string' && /^\d{1,9}(\.\d{1,3})?$/.test(v)
 
 // 이벤트 종류 허용 목록과 종류별로 받는 값. 검색어·단지 이름·관심 목록은 받지 않는다
 export const EVENTS = {
-  visit: {}, // 페이지를 열 때 한 번
-  view_overview: {},
-  view_region: {},
-  view_apt: {},
-  view_watch: { n: int(1000) }, // 관심단지 요약 확인. n: 관심단지 수
+  // j: 1이면 전세 보기에서 일어난 방문·조회 (매매 보기는 값을 보내지 않는다)
+  visit: { j: oneOf(1) }, // 페이지를 열 때 한 번
+  view_overview: { j: oneOf(1) },
+  view_region: { j: oneOf(1) },
+  view_apt: { j: oneOf(1) },
+  view_watch: { n: int(1000), j: oneOf(1) }, // 관심단지 요약 확인. n: 관심단지 수
   view_privacy: {},
   search: { k: oneOf('apt', 'region') }, // 검색 결과 선택. 무엇을 골랐는지 종류만
   watch_add: { n: int(1000), a: oneOf(0, 1) }, // a: 관심 평형까지 골라 저장했는지 (어떤 평형인지는 받지 않는다)
@@ -40,6 +42,7 @@ export const EVENTS = {
   watch_area: {}, // 저장한 단지의 관심 평형을 저장·변경
   sync: { k: oneOf('create', 'link', 'rotate', 'delete', 'unlink', 'conflict') }, // 동기화 코드 행동 종류만 (코드·목록은 받지 않는다)
   guide: { k: oneOf('show', 'search', 'close') }, // 첫 방문 안내: 보임, 검색 시작, 닫음
+  deal: { k: oneOf('sale', 'jeonse') }, // 매매/전세 보기를 바꿈. 바꾼 뒤의 보기
   watch_change_available: { b: buildId, c: int(1000), t: int(100000) }, // 관심단지 화면에 새 거래가 있었음. b: 데이터 빌드, c: 단지 수, t: 거래 수
   watch_change_open: { b: buildId, t: int(100000) }, // 새 거래가 있는 단지를 눌러 상세 확인
 };

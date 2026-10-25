@@ -75,6 +75,7 @@ a { color: inherit; }
   font-size: 12px; white-space: nowrap; padding: 3px 10px; border-radius: 999px;
   border: 1px solid var(--border); color: var(--ink-2);
 }
+.top .deal button { padding: 5px 10px; white-space: nowrap; }
 .badge.demo { border-color: var(--series-2); color: var(--series-2); }
 
 main { max-width: 1200px; margin: 0 auto; padding: 24px; }

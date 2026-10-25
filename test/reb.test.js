@@ -59,5 +59,7 @@ test('summarize: 주간 지수 n주 전 대비 변화', () => {
   assert.strictEqual(w.chg1w, 105 / 104 - 1);
   assert.strictEqual(w.chg4w, 105 / 101 - 1);
   assert.strictEqual(w.chg12w, null);
+  assert.strictEqual(w.jeonseChg1w, 51 / 50 - 1);
   assert.strictEqual(w.jeonseChg4w, 51 / 50 - 1);
+  assert.strictEqual(w.jeonseChg12w, null);
 });

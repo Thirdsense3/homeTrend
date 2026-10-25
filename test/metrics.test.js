@@ -45,6 +45,20 @@ test('동기화: 행동 종류만 받고 코드는 버린다', async () => {
   assert.deepEqual(b.events.map((e) => [e.type, e.props]), [['sync', { k: 'create' }], ['sync', {}]]);
 });
 
+test('매매/전세 보기: 바꾼 보기와 전세 보기 표시만 받는다', async () => {
+  const m = await load();
+  const b = m.parseBatch(JSON.stringify({ d: DEV, e: [
+    { id: ID(1), type: 'deal', p: { k: 'jeonse' } },
+    { id: ID(2), type: 'deal', p: { k: 'monthly' } },
+    { id: ID(3), type: 'view_watch', p: { n: 2, j: 1 } },
+    { id: ID(4), type: 'view_region', p: { j: 0 } },
+    { id: ID(5), type: 'visit', p: { j: 1 } },
+  ] }), NOW);
+  assert.deepEqual(b.events.map((e) => [e.type, e.props]), [
+    ['deal', { k: 'jeonse' }], ['deal', {}], ['view_watch', { n: 2, j: 1 }], ['view_region', {}], ['visit', { j: 1 }],
+  ]);
+});
+
 test('형식이 틀린 요청은 거부한다', async () => {
   const m = await load();
   const bad = (o) => assert.throws(() => m.parseBatch(typeof o === 'string' ? o : JSON.stringify(o), NOW), m.BadRequest);

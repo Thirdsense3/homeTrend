@@ -1,6 +1,6 @@
 /* homeTrend 프론트엔드 — 해시 라우팅 + Chart.js */
 const app = document.getElementById('app');
-const state = { meta: null, overview: {}, raw: {}, charts: [], sort: { overview: ['chg3m', -1], apts: ['count12m', -1] }, pv: { median: true, jeonse: true }, ap: { mode: 'dots', jeonse: true, low: true } };
+const state = { meta: null, overview: {}, raw: {}, charts: [], sort: { overview: ['chg3m', -1], overviewJ: ['chg3m', -1], apts: ['count12m', -1] }, deal: 'sale', pv: { median: true, jeonse: true }, ap: { mode: 'dots', jeonse: true, low: true } };
 // 정적 사이트(GitHub Pages): 빌드된 data/*.json을 읽는다. 로컬 서버: /api/* 를 호출한다
 const STATIC = !!window.HT_STATIC;
 const A = window.Analyze;
@@ -123,11 +123,13 @@ async function getRaw(code, months) {
   return state.raw[k];
 }
 // brokerOnly: 직거래(가족 간 거래 등 시세와 동떨어질 수 있는 거래)를 빼고 계산
-async function getRegion(code, months, brokerOnly) {
+// jeonse: 단지 목록을 전세 거래(보증금)로 만든다. 같은 날 몰린 전세(일괄)는 지역 전세 지표처럼 뺀다
+async function getRegion(code, months, brokerOnly, jeonse) {
   const raw = await getRaw(code, months);
   const trades = brokerOnly ? raw.trades.filter((t) => t.kind !== '직거래') : raw.trades;
   const summary = A.regionSummary(raw.yms, trades, raw.rents);
   summary.indicators.candidate = hasMissing(code) ? null : A.candidateScore(summary.indicators, summary.series);
+  if (jeonse) return { ...summary, apartments: A.apartmentList(raw.rents.filter(A.isJeonse), 'deposit', () => true) };
   const partial = brokerOnly ? raw.partial.filter((t) => t.kind !== '직거래') : raw.partial;
   return { ...summary, apartments: withPartial(A.apartmentList(trades), partial) };
 }
@@ -160,16 +162,21 @@ function withPartial(list, partial) {
   return out;
 }
 // partial: 이번 달(신고 진행 중) 거래. 시세·차트·지표에는 쓰지 않고 목록에서만 따로 표시한다
-async function getApt(code, key, months) {
+// jeonseOk: 전세 보기. 매매가 없거나 일괄 거래뿐이어도 전세 거래가 있으면 단지를 보여 준다
+async function getApt(code, key, months, jeonseOk) {
   const { yms, trades, partial, rents } = await getRaw(code, months);
   key = A.canonicalKey(code, key, state.complexes?.[code]);
   const both = A.markBulk([...trades, ...partial].filter((x) => A.aptKey(x) === key)).sort((a, b) => a.date.localeCompare(b.date));
   const t = both.filter((x) => !x.partial);
-  if (!t.length && both.length) throw new Error(`이번 달(신고 진행 중) 거래 ${both.length}건만 있는 단지예요. 시세·차트는 신고가 끝나는 다음 달부터 계산해요`);
-  if (!t.length) throw new Error('해당 기간에 거래가 없는 단지입니다');
-  if (t.every((x) => x.bulk)) throw new Error('해당 기간에 일괄 거래(통매각)만 있어 시세를 계산할 수 없는 단지입니다');
   const r = rents.filter((x) => A.aptKey(x) === key).sort((a, b) => a.date.localeCompare(b.date));
-  const last = t[t.length - 1];
+  const jn = r.filter(A.isJeonse).length;
+  if (!(jeonseOk && jn)) {
+    const hint = jn ? ` (전세 ${jn}건은 위에서 '전세'로 바꾸면 볼 수 있어요)` : '';
+    if (!t.length && both.length) throw new Error(`이번 달(신고 진행 중) 거래 ${both.length}건만 있는 단지예요. 시세·차트는 신고가 끝나는 다음 달부터 계산해요${hint}`);
+    if (!t.length) throw new Error(`해당 기간에 ${jn ? '매매 ' : ''}거래가 없는 단지입니다${hint}`);
+    if (t.every((x) => x.bulk)) throw new Error(`해당 기간에 일괄 거래(통매각)만 있어 시세를 계산할 수 없는 단지입니다${hint}`);
+  }
+  const last = t[t.length - 1] || r[r.length - 1];
   const cur = both.filter((x) => x.partial);
   // 평형 목록: 시세·차트는 지난달까지로 계산하되, 이번 달에만 거래가 있는 평형도 고를 수 있게 뒤에 붙인다 (partialOnly)
   const { areas } = A.apartmentDetail(yms, t, r);
@@ -649,14 +656,16 @@ const rangeSeg = (id, n, opts = [[12, '1년'], [36, '3년'], [60, '5년'], [0, '
 const headJoin = (parts) => parts.filter(Boolean).map((x) => `<span>${x}</span>`).join('<span class="sep">·</span>');
 const volFmt = { type: 'custom', minMove: 1, formatter: (v) => `${Math.round(v)}건` };
 
-// 지역 평당가 + 거래량. 토스증권처럼 위의 큰 숫자가 십자선을 따라 바뀐다
-function priceVolumeChart(s, ind) {
+// 전세 보기의 시계열: 전세 이동평균·중위값·건수를 매매 자리에 넣어 같은 차트로 그린다 (겹쳐 그릴 전세선은 없음)
+const jeonseView = (s) => s.map((r) => ({ ...r, ma: r.jeonseMa, median: r.jeonse, count: r.jeonseCount, bulk: 0, jeonseMa: null }));
+// 지역 평당가 + 거래량. 토스증권처럼 위의 큰 숫자가 십자선을 따라 바뀐다. L: 주 시리즈 이름('매매'·'전세')
+function priceVolumeChart(s, ind, L = '매매') {
   const chart = tvChart(document.getElementById('pv'));
   const last = s.length - 1; // 신고 진행 중인 달: 이동평균은 그리지 않고(지표와 같은 기준) 거래량만 옅게
   const ma = s.map((r, i) => (i < last ? r.ma : null));
   const pt = (r, v) => (v == null ? { time: ymSec(r.ym) } : { time: ymSec(r.ym), value: v });
   const manFmt = { type: 'custom', minMove: 1, formatter: fmtMan };
-  const price = chart.addSeries(LWC.AreaSeries, { title: '매매', lineWidth: 2, priceFormat: manFmt, priceLineStyle: LWC.LineStyle.Dotted, crosshairMarkerRadius: 4, crosshairMarkerBorderColor: css('--surface') });
+  const price = chart.addSeries(LWC.AreaSeries, { title: L, lineWidth: 2, priceFormat: manFmt, priceLineStyle: LWC.LineStyle.Dotted, crosshairMarkerRadius: 4, crosshairMarkerBorderColor: css('--surface') });
   price.setData(s.map((r, i) => pt(r, ma[i])));
   const jeonse = chart.addSeries(LWC.LineSeries, { title: '전세', color: css('--series-2'), lineWidth: 2, priceFormat: manFmt, priceLineVisible: false, crosshairMarkerRadius: 3, visible: state.pv.jeonse });
   jeonse.setData(s.map((r, i) => pt(r, i < last ? r.jeonseMa : null)));
@@ -683,12 +692,12 @@ function priceVolumeChart(s, ind) {
     headSub.innerHTML = headJoin([
       `<b>${fmtYm(r.ym)}</b>`,
       chg != null ? `${delta(chg)} <span class="muted">${fmtYm(s[a].ym)} 대비</span>` : '',
-      state.pv.median && r.median != null ? `매매 월 중위 ${fmtMan(r.median)}` : '',
+      state.pv.median && r.median != null ? `${L} 월 중위 ${fmtMan(r.median)}` : '',
       state.pv.jeonse && k < last && r.jeonseMa != null ? `전세 이동평균 ${fmtMan(r.jeonseMa)}` : '',
-      `매매 거래 ${r.count}건${r.bulk ? ` (+일괄 ${r.bulk})` : ''}${k === last ? ' · 신고 진행 중' : ''}`,
+      `${L} 거래 ${r.count}건${r.bulk ? ` (+일괄 ${r.bulk})` : ''}${k === last ? ' · 신고 진행 중' : ''}`,
     ]);
   };
-  const onRange = trackRange(chart, s, ma, price, (a1, b1) => { [a, b] = [a1, b1]; showHead(null); }, '매매', document.getElementById('pvSwatch'));
+  const onRange = trackRange(chart, s, ma, price, (a1, b1) => { [a, b] = [a1, b1]; showHead(null); }, L, document.getElementById('pvSwatch'));
   const byTime = new Map(s.map((r, i) => [ymSec(r.ym), i]));
   chart.subscribeCrosshairMove((p) => showHead(p.time != null ? byTime.get(p.time) ?? null : null));
 
@@ -743,8 +752,9 @@ class DotsView {
 }
 
 // 단지 평형 차트: 실거래 점 / 월봉 전환 (매매·전세 모두), 6개월 이동평균, 아래 칸 월별 매매 건수.
-// 점(월봉 모드에선 그 달)을 누르면 상세 카드가 뜨고, 카드에서 그 거래를 '기준'으로 잡으면 큰 숫자 옆 등락률이 기준 대비로 바뀐다
-function aptChart(sel, allTrades, allJeonse) {
+// 점(월봉 모드에선 그 달)을 누르면 상세 카드가 뜨고, 카드에서 그 거래를 '기준'으로 잡으면 큰 숫자 옆 등락률이 기준 대비로 바뀐다.
+// 전세 보기는 L = '전세'로 부르고 전세 거래를 allTrades(price = 보증금), 전세 이동평균을 sel.series의 ma에 넣어 준다 (겹쳐 그릴 전세는 없음)
+function aptChart(sel, allTrades, allJeonse, L = '매매') {
   const s = sel.series, last = s.length - 1;
   const o = state.ap;
   const ymOf = (t) => t.date.slice(0, 4) + t.date.slice(5, 7);
@@ -752,9 +762,9 @@ function aptChart(sel, allTrades, allJeonse) {
   const warm = allTrades.length ? `${+allTrades[0].date.slice(0, 4) + 1}${allTrades[0].date.slice(4)}` : '';
   let top = -Infinity;
   const tradePts = allTrades.map((t, n) => {
-    const high = t.date >= warm && t.price > top, prevTop = top > 0 ? top : null;
+    const high = L === '매매' && t.date >= warm && t.price > top, prevTop = top > 0 ? top : null; // 신고가 표시는 매매만
     top = Math.max(top, t.price);
-    return { id: n, y: t.price, dx: dayOffset(t.date), ym: ymOf(t), t, kind: '매매', high, prevTop };
+    return { id: n, y: t.price, dx: dayOffset(t.date), ym: ymOf(t), t, kind: L, high, prevTop };
   });
   const jeonsePts = allJeonse.map((t, n) => ({ id: 1e6 + n, y: t.deposit, dx: dayOffset(t.date), ym: ymOf(t), t, kind: '전세' }));
   const low = (p) => p.t.floor <= 3; // 저층(지하 포함)은 시세보다 낮게 거래되는 경우가 많다
@@ -764,14 +774,14 @@ function aptChart(sel, allTrades, allJeonse) {
   const eokFmt = { type: 'custom', minMove: 1, formatter: fmtEok };
   const ma = s.map((r, i) => (i < last ? r.ma : null));
   const pt = (r, v) => (v == null ? { time: ymSec(r.ym) } : { time: ymSec(r.ym), value: v });
-  const line = chart.addSeries(LWC.AreaSeries, { title: '매매', lineWidth: 2, priceFormat: eokFmt, priceLineStyle: LWC.LineStyle.Dotted, crosshairMarkerVisible: false });
+  const line = chart.addSeries(LWC.AreaSeries, { title: L, lineWidth: 2, priceFormat: eokFmt, priceLineStyle: LWC.LineStyle.Dotted, crosshairMarkerVisible: false });
   line.setData(s.map((r, i) => pt(r, ma[i])));
   const jLine = chart.addSeries(LWC.LineSeries, { title: '전세', color: css('--series-2'), lineWidth: 2, priceFormat: eokFmt, priceLineVisible: false, crosshairMarkerVisible: false });
   jLine.setData(s.map((r, i) => pt(r, i < last ? r.jeonseMa : null)));
   const dotOpts = { priceFormat: eokFmt, ring: css('--up'), focus: css('--ink') };
   const jView = new DotsView(), tView = new DotsView();
   const jDots = chart.addCustomSeries(jView, { ...dotOpts, color: css('--series-2') });
-  const tDots = chart.addCustomSeries(tView, { ...dotOpts, color: css('--series-1') });
+  const tDots = chart.addCustomSeries(tView, { ...dotOpts, color: css(L === '매매' ? '--series-1' : '--series-2') });
   // 전세 월봉: 전세 색 하나로, 오른 달은 채움·내린 달은 속 빈 몸통. 매매 월봉보다 먼저 넣어 뒤에 깔린다
   const jCandles = chart.addSeries(LWC.CandlestickSeries, {
     priceFormat: eokFmt, upColor: css('--series-2'), downColor: 'transparent', borderUpColor: css('--series-2'), borderDownColor: css('--series-2'),
@@ -821,8 +831,8 @@ function aptChart(sel, allTrades, allJeonse) {
       headValue.innerHTML = `${fmtEok(dot.y)}${dot.high ? ' <span class="tag high">신고가</span>' : ''}`;
       headSub.innerHTML = headJoin([
         `<b>${dd(t.date)}</b>`, `${dot.kind} · ${t.floor}층`,
-        anchor && anchor !== dot ? vs(dot.y) : (dot.kind === '매매' && m ? `${delta(dot.y / m - 1)} <span class="muted">매매 6개월 이동평균 대비</span>` : ''),
-        dot.kind === '매매' ? `평당 ${fmtMan(dot.y / (t.area / PYEONG))}` : '',
+        anchor && anchor !== dot ? vs(dot.y) : (dot.kind === L && m ? `${delta(dot.y / m - 1)} <span class="muted">${L} 6개월 이동평균 대비</span>` : ''),
+        dot.kind === L ? `평당 ${fmtMan(dot.y / (t.area / PYEONG))}` : '',
       ]);
       return;
     }
@@ -832,12 +842,12 @@ function aptChart(sel, allTrades, allJeonse) {
     headSub.innerHTML = headJoin([
       `<b>${fmtYm(r.ym)}</b>`,
       v != null && anchor ? vs(v) : v != null && i > a ? `${delta(v / ma[a] - 1)} <span class="muted">${fmtYm(s[a].ym)} 대비</span>` : '',
-      ts.length ? `매매 ${ts.length}건 ${range(ts)}` : '매매 없음',
+      ts.length ? `${L} ${ts.length}건 ${range(ts)}` : `${L} 없음`,
       js.length ? `전세 ${js.length}건 ${range(js)}` : '',
       i === last ? '신고 진행 중' : '',
     ]);
   };
-  const onRange = trackRange(chart, s, ma, line, (a1, b1) => { [a, b] = [a1, b1]; showHead(null); }, '매매', document.getElementById('apSwatch'));
+  const onRange = trackRange(chart, s, ma, line, (a1, b1) => { [a, b] = [a1, b1]; showHead(null); }, L, document.getElementById('apSwatch'));
 
   // 십자선 근처(10px 안)의 점 찾기. 점 위치는 렌더러와 같은 식으로 계산
   const byTime = new Map(s.map((r, i) => [ymSec(r.ym), i]));
@@ -875,17 +885,17 @@ function aptChart(sel, allTrades, allJeonse) {
   const row = (k, v) => `<div><dt>${k}</dt><dd>${v}</dd></div>`;
   const dotCard = (dot) => {
     const t = dot.t, i = byTime.get(ymSec(dot.ym)), m = ma[i];
-    const same = (dot.kind === '매매' ? shownT : shownJ).filter((q) => q.ym === dot.ym);
+    const same = (dot.kind === L ? shownT : shownJ).filter((q) => q.ym === dot.ym);
     const isAnchor = anchor === dot;
     return `<div class="pop-head"><span class="pop-kind"><i class="dot" style="background:${css(dot.kind === '매매' ? '--series-1' : '--series-2')}"></i>${dot.kind}</span><span class="muted">${t.date.replace(/-/g, '.')}</span><button type="button" class="pop-x" aria-label="닫기">×</button></div>
       <div class="pop-value num">${fmtEok(dot.y)}${dot.high ? ' <span class="tag high">신고가</span>' : ''}</div>
       <dl class="pop-rows num">
         ${row('층 · 전용', `${t.floor}층 · ${t.area}㎡`)}
-        ${dot.kind === '매매' ? row('평당가', fmtMan(dot.y / (t.area / PYEONG))) : ''}
-        ${dot.kind === '매매' && t.kind ? row('거래 유형', esc(t.kind)) : ''}
-        ${dot.kind === '매매' && m ? row('6개월 이동평균 대비', delta(dot.y / m - 1)) : ''}
-        ${dot.kind === '매매' && dot.prevTop ? row('직전 최고가 대비', `${delta(dot.y / dot.prevTop - 1)} <span class="muted">${fmtEok(dot.prevTop)}</span>`) : ''}
-        ${dot.kind === '전세' && m ? row('매매 이동평균 대비 (전세가율)', fmtPct(dot.y / m, 0)) : ''}
+        ${dot.kind === L ? row('평당가', fmtMan(dot.y / (t.area / PYEONG))) : ''}
+        ${dot.kind === L && t.kind ? row('거래 유형', esc(t.kind)) : ''}
+        ${dot.kind === L && m ? row('6개월 이동평균 대비', delta(dot.y / m - 1)) : ''}
+        ${dot.kind === L && dot.prevTop ? row(L === '매매' ? '직전 최고가 대비' : '직전 최고 보증금 대비', `${delta(dot.y / dot.prevTop - 1)} <span class="muted">${fmtEok(dot.prevTop)}</span>`) : ''}
+        ${L === '매매' && dot.kind === '전세' && m ? row('매매 이동평균 대비 (전세가율)', fmtPct(dot.y / m, 0)) : ''}
         ${row(`같은 달 ${dot.kind}`, `${same.length}건${same.length > 1 ? ` · ${range(same)}` : ''}`)}
         ${anchor && !isAnchor ? row(`기준 ${dd(anchor.t.date)} 대비`, delta(dot.y / anchor.y - 1)) : ''}
       </dl>
@@ -901,8 +911,8 @@ function aptChart(sel, allTrades, allJeonse) {
         + row('최저 ~ 최고', `${fmtEok(c.low)} ~ ${fmtEok(c.high)}`);
     };
     return `<div class="pop-head"><span class="pop-kind">${fmtYm(r.ym)} 월봉</span>${i === last ? '<span class="muted">신고 진행 중</span>' : ''}<button type="button" class="pop-x" aria-label="닫기">×</button></div>
-      <div class="pop-value num">${ma[i] != null ? fmtEok(ma[i]) : '–'} <span class="muted" style="font-size:12px;font-weight:400">매매 6개월 이동평균</span></div>
-      <dl class="pop-rows num">${part('매매', ts)}${o.jeonse ? part('전세', js) : ''}</dl>`;
+      <div class="pop-value num">${ma[i] != null ? fmtEok(ma[i]) : '–'} <span class="muted" style="font-size:12px;font-weight:400">${L} 6개월 이동평균</span></div>
+      <dl class="pop-rows num">${part(L, ts)}${o.jeonse && L === '매매' ? part('전세', js) : ''}</dl>`;
   };
   // 카드 자리: 대상 오른쪽(자리가 없으면 왼쪽), 세로는 차트 안으로. 보이는 구간 밖이면 숨김
   const place = () => {
@@ -966,8 +976,9 @@ function aptChart(sel, allTrades, allJeonse) {
 
   app.querySelectorAll('#apMode button').forEach((btn) => btn.addEventListener('click', () => {
     o.mode = btn.dataset.m;
-    document.getElementById('apKind').textContent = o.mode === 'dots' ? '매매 실거래' : '매매 월봉';
-    document.getElementById('apJKind').textContent = o.mode === 'dots' ? '전세 실거래·이동평균' : '전세 월봉·이동평균';
+    document.getElementById('apKind').textContent = o.mode === 'dots' ? `${L} 실거래` : `${L} 월봉`;
+    const jk = document.getElementById('apJKind');
+    if (jk) jk.textContent = o.mode === 'dots' ? '전세 실거래·이동평균' : '전세 월봉·이동평균';
     openCard(null);
     app.querySelectorAll('#apMode button').forEach((x) => x.classList.toggle('on', x === btn));
     apply(); showHead(null);
@@ -977,7 +988,7 @@ function aptChart(sel, allTrades, allJeonse) {
     o[k] = !o[k];
     btn.classList.toggle('on', o[k]);
     apply(); showHead(null);
-    if (pinned?.dot && !(pinned.dot.kind === '매매' ? shownT : shownJ).includes(pinned.dot)) openCard(null);
+    if (pinned?.dot && !(pinned.dot.kind === L ? shownT : shownJ).includes(pinned.dot)) openCard(null);
     else openCard(pinned);
   }));
   apply();
@@ -1010,7 +1021,7 @@ async function route() {
       initRegionJump();
       watch.adopt(state.meta.buildNo);
       document.dispatchEvent(new Event('ht:meta')); // 먼저 눌러 둔 검색창이 이어서 목록을 받도록
-      metrics.track('visit');
+      metrics.track('visit', isJ() ? { j: 1 } : undefined);
       sync.run(); // 동기화 코드를 연결했으면 다른 기기에서 바꾼 목록을 받는다
     }
     let parts = location.hash.replace(/^#\/?/, '').split('/').map(decodeURIComponent);
@@ -1026,8 +1037,10 @@ async function route() {
       : view === 'privacy' ? null
       : view === 'g' && parts[1] ? parts[1] : '서울';
     document.querySelectorAll('#tabs a').forEach((a) => a.classList.toggle('on', a.dataset.tab === tab));
-    // 화면 종류만 기록 (기간·테마를 바꿔 다시 그려도 같은 화면으로 센다. 집계는 기기 수 기준)
-    if (!state.keepView) metrics.track(view === 'r' ? 'view_region' : view === 'a' ? 'view_apt' : view === 'watch' ? 'view_watch' : view === 'privacy' ? 'view_privacy' : 'view_overview', view === 'watch' ? { n: watch.list().length } : undefined);
+    // 화면 종류만 기록 (기간·테마·매매/전세 보기를 바꿔 다시 그려도 같은 화면으로 센다. 집계는 기기 수 기준)
+    const j = isJ() && view !== 'privacy' ? { j: 1 } : undefined;
+    if (!state.keepView && !state.dealSwitch) metrics.track(view === 'r' ? 'view_region' : view === 'a' ? 'view_apt' : view === 'watch' ? 'view_watch' : view === 'privacy' ? 'view_privacy' : 'view_overview', view === 'watch' ? { n: watch.list().length, ...j } : j);
+    state.dealSwitch = false;
     if (view === 'r') await viewRegion(parts[1], id);
     else if (view === 'a') await viewApt(parts[1], parts.slice(2).join('/'), id);
     else if (view === 'watch') await viewWatch(id);
@@ -1248,6 +1261,21 @@ const OV_COLS = [
   ['forecast6', '6개월 예측 (실험)', null, (r) => forecastCell(r, 6)],
   ['spark', '24개월 추이', null, (r) => (r.series ? sparkline(r.series.slice(-24).map((s) => s.ma)) : '')],
 ];
+// 전세 보기의 지역 표: 전세 거래로 계산한 지표(ind.jeonse)와 부동산원 주간 전세지수.
+// 신고가 비율·외지인 매입·국면·후보 점수·예측은 매매 기준이라 뺀다
+const jInd = (r) => r.ind?.jeonse;
+const OV_J_COLS = [
+  OV_COLS[0],
+  ['current', '평당 전세가 (3개월 평균)', (r) => jInd(r)?.current, (r) => (r.error ? `<span class="err" title="${esc(r.error)}">오류</span>` : r.ind ? fmtMan(jInd(r)?.current) : '<span class="muted">불러오는 중…</span>')],
+  ['eq84', '84㎡ 환산', (r) => jInd(r)?.current, (r) => (jInd(r)?.current ? fmtEok(Math.round(jInd(r).current * 84 / PYEONG / 100) * 100) : '–')],
+  ['chg3m', '3개월', (r) => jInd(r)?.chg3m, (r) => delta(jInd(r)?.chg3m)],
+  ['chg12m', '12개월', (r) => jInd(r)?.chg12m, (r) => delta(jInd(r)?.chg12m)],
+  ['fromPeak', '5년 고점 대비', (r) => jInd(r)?.fromPeak, (r) => (jInd(r) ? `${delta(jInd(r).fromPeak)} <span class="muted">${fmtYm(jInd(r).peakYm)}</span>` : '–')],
+  ['volVsAvg', '전세 거래량 (장기평균 대비)', (r) => jInd(r)?.volVsAvg, (r) => (jInd(r) ? `${jInd(r).volRecent}건/월 ${delta(jInd(r).volVsAvg, 0)}` : '–')],
+  OV_COLS.find(([k]) => k === 'jeonseRatio'),
+  ['weekly4w', '주간 전세지수 4주 (부동산원)', (r) => rebInd(r.code)?.weekly?.jeonseChg4w, (r) => { const w = rebInd(r.code)?.weekly; return w?.jeonseChg4w != null ? `<span title="${fmtDate(w.date)} 주 기준${w.jeonseChg1w != null ? ` · 1주 ${fmtPct(w.jeonseChg1w, 2)}` : ''}">${delta(w.jeonseChg4w, 2)}</span>` : '<span class="muted">–</span>'; }],
+  ['spark', '24개월 추이', null, (r) => (r.series ? sparkline(r.series.slice(-24).map((s) => s.jeonseMa)) : '')],
+];
 
 // 외지인(다른 시·구 거주자) 매입 비중과 장기 평균(36개월) 대비 차이(%p)
 function outsideCell(b) {
@@ -1262,7 +1290,8 @@ function rebLead(group) {
   if (!w) return '';
   // delta(x, 2)가 0.00%로 표시하는 범위만 보합으로 본다
   const word = (x) => (x == null ? '–' : Math.abs(x) * 100 < 0.005 ? '보합' : delta(x, 2));
-  return `한국부동산원 주간지수(${fmtDate(w.date)} 주)로는 ${esc(group)} 아파트 매매가가 최근 4주 ${word(w.chg4w)}, 지난주 ${word(w.chg1w)}예요. ${tip('한국부동산원이 매주 표본 아파트의 시세를 조사해 낸 지수예요. 실거래가 아니라 조사 가격이라 실거래 지표와 다를 수 있지만, 신고를 기다리지 않아 1~2개월 더 빨리 흐름을 보여줘요.')}`;
+  const [c4, c1] = isJ() ? [w.jeonseChg4w, w.jeonseChg1w] : [w.chg4w, w.chg1w];
+  return `한국부동산원 주간지수(${fmtDate(w.date)} 주)로는 ${esc(group)} 아파트 ${dealName()}가가 최근 4주 ${word(c4)}, 지난주 ${word(c1)}예요. ${tip('한국부동산원이 매주 표본 아파트의 시세를 조사해 낸 지수예요. 실거래가 아니라 조사 가격이라 실거래 지표와 다를 수 있지만, 신고를 기다리지 않아 1~2개월 더 빨리 흐름을 보여줘요.')}`;
 }
 
 function sortRows(rows, cols, [key, dir]) {
@@ -1418,13 +1447,18 @@ function renderGuide() {
 }
 
 async function viewOverview(group, id) {
+  const J = isJ();
+  const I = (r) => (J ? jInd(r) : r.ind); // 가격·거래량 지표 (전세 보기는 전세 거래로 계산한 값)
+  const cols = J ? OV_J_COLS : OV_COLS, sortKey = J ? 'overviewJ' : 'overview';
   const regions = state.meta.regions.filter((r) => r.group === group);
   // 지난번에 실패한 지역은 다시 시도
   regions.forEach((r) => { if (state.overview[r.code]?.error) delete state.overview[r.code]; });
   app.innerHTML = `
-    <h1>${esc(group)} 지역별 시세 트렌드 ${tip('실거래 평당가의 3개월 이동평균 기준 (단지 구성 보정, 신고 진행 중인 지난달·통매각 같은 일괄 거래 제외). 거래량은 최근 3개월을 36개월 평균과 비교해요. 신고가 비율은 최근 3개월 거래 중 같은 단지·평형의 이전 최고가를 넘은 거래 비중으로, 시장이 달아오르면 가장 먼저 올라가요.')}</h1>
+    <h1>${esc(group)} 지역별 ${J ? '전세' : '시세'} 트렌드 ${tip(J
+      ? '전세 실거래 평당 보증금의 3개월 이동평균 기준 (단지 구성 보정, 신고 진행 중인 지난달·같은 날 몰린 일괄 계약 제외). 월세·반전세는 넣지 않아요. 거래량은 최근 3개월 전세 계약 수를 36개월 평균과 비교해요. 전세가율은 평당 전세가 ÷ 평당 매매가예요.'
+      : '실거래 평당가의 3개월 이동평균 기준 (단지 구성 보정, 신고 진행 중인 지난달·통매각 같은 일괄 거래 제외). 거래량은 최근 3개월을 36개월 평균과 비교해요. 신고가 비율은 최근 3개월 거래 중 같은 단지·평형의 이전 최고가를 넘은 거래 비중으로, 시장이 달아오르면 가장 먼저 올라가요.')}</h1>
     <div id="guide"></div>
-    <div id="feed"></div>
+    ${J ? `<p class="muted">${SALE_ONLY_NOTE}</p>` : '<div id="feed"></div>'}
     <div class="card region-filter"><label>구·시 찾기 <input id="regionQuery" type="search" placeholder="예: 성북구"></label>
       <label><input type="checkbox" id="likedRegions"> 좋아요한 지역만</label>
       <details><summary>비교할 지역 선택</summary><div class="region-options">${regions.slice().sort((a, b) => a.name.localeCompare(b.name, 'ko')).map((r) => `<label><input type="checkbox" name="regionCode" value="${r.code}">${esc(r.name)}</label>`).join('')}</div></details>
@@ -1432,17 +1466,17 @@ async function viewOverview(group, id) {
     <p class="muted">♥ 좋아요는 이 브라우저에 저장됩니다. 단지는 ★ 관심단지로 저장할 수 있어요.</p>
     <p class="lead" id="ovLead"></p>
     <p class="muted" id="rebLead"></p>
-    <p class="muted" id="forecastNote"></p>
+    ${J ? '' : `<p class="muted" id="forecastNote"></p>
     <details class="card candidate-note"><summary>상승 후보 점수 (실험) — 계산 기준</summary><p>가격 흐름 50점 · 거래량 30점 · 전세가율 20점으로 현재 관측 지표를 비교합니다. 점수가 높을수록 최근 상승·거래 신호가 강합니다. 5년 후 급등 확률이나 예상 수익률은 아니며, 장기 예측 성능은 아직 검증되지 않았습니다.</p><p>완성월 36개월 이상, 거래가 있는 달 30개월 이상, 최근 월평균 거래 10건 이상일 때 표시합니다. 수집 누락이 있는 지역은 점수를 표시하지 않습니다. 공급·교통·정비사업은 아직 반영하지 않았습니다.</p></details>
     <div class="card">
       <div class="row" style="margin-bottom:8px"><h2 style="margin:0">국면 지도 — 가격 변화 × 거래량 ${tip('벌집순환모형: 거래량이 먼저 움직이고 가격이 따라와요. 오른쪽 아래(불황) → 가운데 오른쪽(회복진입) → 오른쪽 위(회복) 순서로 옮겨가는 지역을 주목하세요. 점에 마우스를 올리면 6개월 전 → 3개월 전 → 지금 이동 경로가 보이고, 누르면 지역 화면으로 가요. ‘모든 지역 최근 이동 방향’을 켜면 지역마다 3개월 전 → 지금 움직임을 화살표로 보여줘요.')}</h2><span class="spacer"></span><label class="muted" style="font-size:12px"><input type="checkbox" id="trail" ${state.trail ? 'checked' : ''}> 모든 지역 최근 이동 방향</label></div>
       <div class="chart-box tall"><canvas id="phaseMap"></canvas></div>
-    </div>
+    </div>`}
     <div id="macro"></div>
     <div class="card"><div class="row"><h2 style="margin:0">지역별 지표</h2><span class="spacer"></span><span id="ovSort"></span></div><div class="table-wrap mcards"><table><thead></thead><tbody></tbody></table></div></div>`;
   renderGuide();
   renderMacro(id);
-  renderFeed(group, id);
+  if (!J) renderFeed(group, id);
 
   const rows = regions.map((r) => ({ ...r, ...(state.overview[r.code] || {}) }));
   const thead = app.querySelector('thead'), tbody = app.querySelector('tbody');
@@ -1454,13 +1488,13 @@ async function viewOverview(group, id) {
   };
   const render = () => {
     const rows = visibleRows();
-    document.getElementById('forecastNote').textContent = forecastNote();
+    if (!J) document.getElementById('forecastNote').textContent = forecastNote();
     document.getElementById('rebLead').innerHTML = rebLead(group);
-    thead.innerHTML = tableHead(OV_COLS, 'overview', state.sort.overview);
-    document.getElementById('ovSort').innerHTML = sortSelect(OV_COLS, 'overview', state.sort.overview);
-    tbody.innerHTML = sortRows(rows, OV_COLS, state.sort.overview)
-      .map((r) => `<tr class="link" data-href="#/r/${r.code}">${cells(OV_COLS, r, (i) => i === 0)}</tr>`).join('');
-    bindSort(app, 'overview', render);
+    thead.innerHTML = tableHead(cols, sortKey, state.sort[sortKey]);
+    document.getElementById('ovSort').innerHTML = sortSelect(cols, sortKey, state.sort[sortKey]);
+    tbody.innerHTML = sortRows(rows, cols, state.sort[sortKey])
+      .map((r) => `<tr class="link" data-href="#/r/${r.code}">${cells(cols, r, (i) => i === 0)}</tr>`).join('');
+    bindSort(app, sortKey, render);
     // 한 줄 요약: 3개월 새 오른 지역 수와 가장 많이 오른 곳.
     // 지역이 하나씩 들어올 때마다 숫자가 바뀌면 오류처럼 보이므로, 다 불러온 뒤에 한 번만 문장을 정한다
     const lead = document.getElementById('ovLead');
@@ -1471,9 +1505,9 @@ async function viewOverview(group, id) {
       lead.innerHTML = `<span class="muted">${esc(group)} ${rows.length}개 지역의 실거래를 불러오는 중이에요 · ${done}/${rows.length}</span><span class="lead-progress"><i style="width:${(done / rows.length) * 100}%"></i></span>`;
       return;
     }
-    const ok = rows.filter((r) => r.ind?.chg3m != null);
+    const ok = rows.filter((r) => I(r)?.chg3m != null);
     // 빠진 지역은 3곳까지 이름으로, 그보다 많으면 개수로 밝힌다
-    const failed = rows.filter((r) => r.error), thin = rows.filter((r) => r.ind && r.ind.chg3m == null);
+    const failed = rows.filter((r) => r.error), thin = rows.filter((r) => r.ind && I(r)?.chg3m == null);
     const who = (rs) => (rs.length <= 3 ? `${rs.map((r) => esc(r.name)).join('·')}${topic(rs[rs.length - 1].name)}` : `${rs.length}곳은`);
     const notes = [failed.length ? `${who(failed)} 불러오지 못해 빼고 계산했어요` : '', thin.length ? `${who(thin)} 거래가 적어 뺐어요` : ''].filter(Boolean);
     const note = notes.length ? ` <span class="muted">(${notes.join(' · ')})</span>` : '';
@@ -1481,15 +1515,16 @@ async function viewOverview(group, id) {
       lead.innerHTML = `<span class="err">지역 데이터를 불러오지 못했어요. 잠시 뒤 새로고침해 주세요.</span>${note}`;
       return;
     }
-    const up = ok.filter((r) => r.ind.chg3m > 0.003).length, down = ok.filter((r) => r.ind.chg3m < -0.003).length;
-    const best = ok.reduce((a, b) => (b.ind.chg3m > a.ind.chg3m ? b : a));
-    const hot = ok.filter((r) => r.ind.volVsAvg > 0.2).length;
-    lead.innerHTML = `최근 3개월 ${esc(group)} ${ok.length}개 지역 중 ${up ? `<span class="up">${up}곳이 올랐고</span>` : '오른 곳은 없고'} ${down ? `<span class="down">${down}곳이 내렸어요</span>` : '내린 곳은 없어요'}. 가장 많이 오른 곳은 <a href="#/r/${best.code}">${esc(best.name)}</a>(${delta(best.ind.chg3m)})이고, 거래량이 장기 평균보다 20% 넘게 늘어난 곳은 ${hot}곳이에요.${note}`;
+    const up = ok.filter((r) => I(r).chg3m > 0.003).length, down = ok.filter((r) => I(r).chg3m < -0.003).length;
+    const best = ok.reduce((a, b) => (I(b).chg3m > I(a).chg3m ? b : a));
+    const hot = ok.filter((r) => I(r).volVsAvg > 0.2).length;
+    lead.innerHTML = `최근 3개월 ${J ? '전세가는 ' : ''}${esc(group)} ${ok.length}개 지역 중 ${up ? `<span class="up">${up}곳이 올랐고</span>` : '오른 곳은 없고'} ${down ? `<span class="down">${down}곳이 내렸어요</span>` : '내린 곳은 없어요'}. 가장 많이 오른 곳은 <a href="#/r/${best.code}">${esc(best.name)}</a>(${delta(I(best).chg3m)})이고, ${J ? '전세 거래가' : '거래량이'} 장기 평균보다 20% 넘게 늘어난 곳은 ${hot}곳이에요.${note}`;
   };
   tbody.addEventListener('click', (e) => { const like = e.target.closest('[data-like-region]'); if (like) { regionLikes.toggle(like.dataset.likeRegion); render(); refreshMap(); return; } const tr = e.target.closest('tr[data-href]'); if (tr) location.hash = tr.dataset.href; });
 
-  const map = phaseMap(document.getElementById('phaseMap'));
+  const mapEl = document.getElementById('phaseMap'), map = mapEl && phaseMap(mapEl); // 국면 지도는 매매 보기에만
   const refreshMap = () => {
+    if (!map) return;
     const pts = visibleRows().filter((r) => r.ind?.chg3m != null && r.ind?.volVsAvg != null)
       .map((r) => ({ x: r.ind.volVsAvg * 100, y: r.ind.chg3m * 100, label: r.name.replace(/ \(.+\)/, ''), code: r.code, phase: r.ind.phase,
         trail: (r.ind.trail || []).map((t) => ({ x: t.volVsAvg * 100, y: t.chg3m * 100, ym: t.ym })) }));
@@ -1497,7 +1532,7 @@ async function viewOverview(group, id) {
     map.data.datasets[1].data = state.trail ? pts.flatMap((p) => p.trail.slice(-1)) : []; // 전체 보기에서 그리는 3개월 전 위치만 축 범위에 넣는다
     map.update('none');
   };
-  document.getElementById('trail').addEventListener('change', (e) => { state.trail = e.target.checked; refreshMap(); });
+  document.getElementById('trail')?.addEventListener('change', (e) => { state.trail = e.target.checked; refreshMap(); });
   for (const el of app.querySelectorAll('#regionQuery, #likedRegions, input[name="regionCode"]')) el.addEventListener(el.id === 'regionQuery' ? 'input' : 'change', () => { render(); refreshMap(); });
   document.getElementById('resetRegions').addEventListener('click', () => { document.getElementById('regionQuery').value = ''; document.getElementById('likedRegions').checked = false; app.querySelectorAll('input[name="regionCode"]').forEach((x) => { x.checked = false; }); render(); refreshMap(); });
   render(); refreshMap();
@@ -1726,6 +1761,18 @@ const APT_COLS = [
   ['fromPeak', '최고가 대비', (r) => r.fromPeak, (r) => delta(r.fromPeak)],
   ['lastDate', '최근 거래일', (r) => r.lastDate, (r) => `${r.lastDate.slice(2).replace(/-/g, '.')}${r.lastPartial ? ` ${partialTag}` : ''}`],
 ];
+// 전세 보기의 단지 목록: 같은 칸을 보증금으로 (A.apartmentList(전세, 'deposit'))
+const APT_J_COLS = [
+  ['apt', '단지', (r) => r.apt, (r) => esc(r.apt)],
+  ...APT_COLS.filter(([k]) => k === 'dong' || k === 'built'),
+  ['count12m', '최근 1년 전세', (r) => r.count12m, (r) => `${r.count12m}건`],
+  APT_COLS.find(([k]) => k === 'mainArea'),
+  ['ppy', '평당 전세가', (r) => r.ppy, (r) => fmtMan(r.ppy)],
+  ['recentPrice', '최근 전세가', (r) => r.recentPrice, (r) => fmtEok(r.recentPrice)],
+  ['peakPrice', '기간 내 최고 보증금', (r) => r.peakPrice, (r) => (r.peakPrice ? `${fmtEok(r.peakPrice)} <span class="muted">${r.peakDate.slice(2, 7).replace('-', '.')}</span>` : '–')],
+  APT_COLS.find(([k]) => k === 'fromPeak'),
+  ['lastDate', '최근 계약일', (r) => r.lastDate, (r) => r.lastDate.slice(2).replace(/-/g, '.')],
+];
 
 function monthsSeg(cur, opts) {
   return `<div class="seg" id="months">${opts.map(([m, l]) => `<button data-m="${m}" class="${m === cur ? 'on' : ''}">${l}</button>`).join('')}</div>`;
@@ -1744,6 +1791,32 @@ function bindMonths(view, onPick) {
     state.keepView = true; // 다시 그릴 때 현재 화면을 지우지 않고 흐리게 유지
     route();
   }));
+}
+// 매매/전세 보기: 상단에서 고르고 이 브라우저에 기억한다. 기본은 매매(지금까지의 화면)
+// 전세 보기는 전세 거래로 계산한 시세·거래량만 보여 주고, 매매로만 정의한 것(국면·신고가·새로 확인된 거래·후보 점수·예측)은 숨긴다
+function getDeal() { try { return localStorage.getItem('homeTrend.deal') === 'jeonse' ? 'jeonse' : 'sale'; } catch (_) { return 'sale'; } }
+const isJ = () => state.deal === 'jeonse';
+const dealName = () => (isJ() ? '전세' : '매매');
+const SALE_ONLY_NOTE = '새로 확인된 거래·신고가·급등 표시와 국면·예측은 아직 매매만 다뤄요. 위에서 매매로 바꾸면 볼 수 있어요.';
+function initDeal() {
+  state.deal = getDeal();
+  const seg = document.getElementById('deal');
+  const paint = () => seg.querySelectorAll('button').forEach((b) => {
+    b.classList.toggle('on', b.dataset.d === state.deal);
+    b.setAttribute('aria-pressed', String(b.dataset.d === state.deal));
+  });
+  paint();
+  seg.addEventListener('click', (e) => {
+    const b = e.target.closest('button[data-d]');
+    if (!b || b.dataset.d === state.deal) return;
+    state.deal = b.dataset.d;
+    try { localStorage.setItem('homeTrend.deal', state.deal); } catch (_) { /* 저장 불가: 이번 방문에만 */ }
+    paint();
+    metrics.track('deal', { k: state.deal });
+    if (!state.meta) return; // 첫 화면을 그리는 중이면 그 화면이 바뀐 보기로 그린다
+    state.dealSwitch = true;
+    route();
+  });
 }
 // 거래 유형: 전체 / 중개거래만 (직거래 제외). 화면을 옮겨도 유지
 function getKind() { try { return sessionStorage.getItem('homeTrend.kind') || 'all'; } catch (_) { return 'all'; } }
@@ -1768,21 +1841,44 @@ function showLoading(html) {
 const REGION_MONTHS = [[36, '3년'], [60, '5년'], [120, '10년']];
 const APT_MONTHS = [[36, '3년'], [60, '5년'], [120, '10년'], [192, '16년']];
 
+// 전세 보기의 지역 머리: 전세 거래로 계산한 지표(ind.jeonse)와 전세가율
+function regionJeonseTop(region, ind) {
+  const j = ind.jeonse || {};
+  const name = esc(region.name.replace(/ \(.+\)/, ''));
+  const lead = [
+    j.chg3m == null ? '' : Math.abs(j.chg3m) < 0.003 ? `${name} 평당 전세가는 최근 3개월 거의 그대로이고` : `${name} 평당 전세가는 최근 3개월 ${pctSpan(j.chg3m)} ${j.chg3m > 0 ? '올랐고' : '내렸고'}`,
+    j.volVsAvg == null ? '' : Math.abs(j.volVsAvg) < 0.05 ? '전세 거래는 장기 평균 수준이에요.' : `전세 거래는 장기 평균보다 ${pctSpan(j.volVsAvg, 0)} ${j.volVsAvg > 0 ? '많아요.' : '적어요.'}`,
+    ind.jeonseRatio != null ? `전세가율은 <b>${fmtPct(ind.jeonseRatio, 0)}</b>예요.` : '',
+  ].filter(Boolean).join(' ');
+  return `<p class="lead">${lead} ${tip('평당 전세가 = 전용면적 기준 전세 보증금 ÷ 평 (중위값). 이동평균은 거래된 단지 구성이 달라 생기는 착시를 보정한 값이고, 최근 지표는 신고가 끝난 달까지로 계산해요. 월세·반전세와 같은 날 한 단지에 몰린 일괄 계약은 빼요.')}</p>
+    <p class="muted">${SALE_ONLY_NOTE}</p>
+    <div class="kpis">
+      <div class="kpi"><div class="label">평당 전세가</div><div class="value num">${fmtMan(j.current)}</div><div class="hint">${fmtYm(j.currentYm)} 기준 · 84㎡ 환산 ${j.current ? fmtEok(Math.round(j.current * 84 / PYEONG / 100) * 100) : '–'}</div></div>
+      <div class="kpi"><div class="label">3개월 변화</div><div class="value num">${delta(j.chg3m)}</div><div class="hint">12개월 ${delta(j.chg12m)}</div></div>
+      <div class="kpi"><div class="label">기간 내 고점 대비</div><div class="value num">${delta(j.fromPeak)}</div><div class="hint">고점 ${fmtYm(j.peakYm)} · ${fmtMan(j.peak)}</div></div>
+      <div class="kpi"><div class="label">고점 이후 저점 대비</div><div class="value num">${delta(j.fromLow)}</div><div class="hint">${j.lowYm ? `저점 ${fmtYm(j.lowYm)} · ${fmtMan(j.low)}` : '현재가 고점'}</div></div>
+      <div class="kpi"><div class="label">월 전세 거래 (최근 3개월)</div><div class="value num">${j.volRecent ?? '–'}건</div><div class="hint">장기평균 ${delta(j.volVsAvg, 0)} · 직전 3개월 ${delta(j.volChg, 0)}</div></div>
+      <div class="kpi"><div class="label">전세가율 (최근 6개월)</div><div class="value num">${fmtPct(ind.jeonseRatio, 0)}</div><div class="hint">평당 전세가 ÷ 평당 매매가 · 매매 ${fmtMan(ind.current)}</div></div>
+    </div>`;
+}
+
 async function viewRegion(code, id) {
   const region = requireRegion(code);
   const opts = monthOpts(REGION_MONTHS);
   const months = getMonths(`region.${code}`, opts, Math.min(60, state.meta.months || 60));
-  const brokerOnly = getKind() === 'broker';
+  const J = isJ();
+  const brokerOnly = !J && getKind() === 'broker'; // 직거래 구분은 매매에만 있다
   showLoading(`<div class="crumb"><a href="#/g/${esc(region.group)}">${esc(region.group)}</a> ›</div><h1>${esc(region.name)}</h1>${skeleton(`실거래 ${months}개월치 불러오는 중… (처음 보는 기간은 국토부 API 호출로 30초 정도 걸릴 수 있어요)`)}`);
-  const [d] = await Promise.all([getRegion(code, months, brokerOnly), getForecasts()]);
+  const [d] = await Promise.all([getRegion(code, months, brokerOnly, J), getForecasts()]);
   if (isStale(id)) return;
   destroyCharts();
   const ind = d.indicators;
   const s = d.series;
+  const L = dealName();
   app.innerHTML = `
     <div class="crumb"><a href="#/g/${esc(region.group)}">${esc(region.group)}</a> ›</div>
-    <div class="row"><h1>${esc(region.name)}</h1>${phaseChip(ind.phase)}<span class="spacer"></span>${kindSeg(brokerOnly)}${monthsSeg(months, opts)}</div>
-    <p class="lead">${regionLead(region.name.replace(/ \(.+\)/, ''), ind)} ${tip('평당가 = 전용면적 기준 거래가 ÷ 평 (중위값). 이동평균은 거래된 단지 구성이 달라 생기는 착시를 보정한 값이고, 최근 지표는 신고가 끝난 달까지로 계산해요. 통매각 같은 일괄 거래는 빼고 계산해요.')}</p>
+    <div class="row"><h1>${esc(region.name)}</h1>${J ? '' : phaseChip(ind.phase)}<span class="spacer"></span>${J ? '' : kindSeg(brokerOnly)}${monthsSeg(months, opts)}</div>
+    ${J ? regionJeonseTop(region, ind) : `<p class="lead">${regionLead(region.name.replace(/ \(.+\)/, ''), ind)} ${tip('평당가 = 전용면적 기준 거래가 ÷ 평 (중위값). 이동평균은 거래된 단지 구성이 달라 생기는 착시를 보정한 값이고, 최근 지표는 신고가 끝난 달까지로 계산해요. 통매각 같은 일괄 거래는 빼고 계산해요.')}</p>
     <div class="kpis">
       <div class="kpi"><div class="label">평당 매매가</div><div class="value num">${fmtMan(ind.current)}</div><div class="hint">${fmtYm(ind.currentYm)} 기준 · 84㎡ 환산 ${ind.current ? fmtEok(Math.round(ind.current * 84 / PYEONG / 100) * 100) : '–'}</div></div>
       <div class="kpi"><div class="label">3개월 변화</div><div class="value num">${delta(ind.chg3m)}</div><div class="hint">12개월 ${delta(ind.chg12m)}</div></div>
@@ -1793,10 +1889,12 @@ async function viewRegion(code, id) {
       <div class="kpi"><div class="label">신고가 비율 (최근 3개월)</div><div class="value num">${fmtPct(ind.newHighShare, 0)}</div><div class="hint">직전 거래보다 ${ind.upShare != null ? `오름 ${fmtPct(ind.upShare, 0)} · 내림 ${fmtPct(ind.downShare, 0)}` : '–'}</div></div>
     </div>
     ${forecastCard(code, brokerOnly)}
-    ${ind.phase ? `<p class="phase-note card">${ind.phase.id ? `${ind.phase.id}국면 ` : ''}<b>${esc(ind.phase.name)}</b> — ${esc(ind.phase.note)}</p>` : ''}
+    ${ind.phase ? `<p class="phase-note card">${ind.phase.id ? `${ind.phase.id}국면 ` : ''}<b>${esc(ind.phase.name)}</b> — ${esc(ind.phase.note)}</p>` : ''}`}
     <div class="card">
       <div class="tv-head">
-        <div class="tv-label">평당 매매가 <span class="muted">3개월 이동평균 · 구성 보정 · 만원/3.3㎡</span> ${tip('아래 칸은 월별 매매 거래량이고, 점선은 장기 평균(36개월 중위)이에요. 마지막 달(옅은 막대)은 신고 진행 중이라 덜 잡혀요. 노란 막대는 통매각 같은 일괄 거래로 지표 계산에서 뺐어요. 휠·핀치로 확대하고 끌어서 이동할 수 있어요.')}</div>
+        <div class="tv-label">평당 ${L}가 <span class="muted">3개월 이동평균 · 구성 보정 · 만원/3.3㎡</span> ${tip(J
+          ? '전세 보증금 ÷ 평의 월 중위값이에요. 아래 칸은 월별 전세 계약 수이고, 점선은 장기 평균(36개월 중위)이에요. 마지막 달(옅은 막대)은 신고 진행 중이라 덜 잡혀요. 같은 날 한 단지에 몰린 일괄 계약은 뺐어요. 휠·핀치로 확대하고 끌어서 이동할 수 있어요.'
+          : '아래 칸은 월별 매매 거래량이고, 점선은 장기 평균(36개월 중위)이에요. 마지막 달(옅은 막대)은 신고 진행 중이라 덜 잡혀요. 노란 막대는 통매각 같은 일괄 거래로 지표 계산에서 뺐어요. 휠·핀치로 확대하고 끌어서 이동할 수 있어요.')}</div>
         <div class="tv-value num" id="pvValue"></div>
         <div class="tv-sub num" id="pvSub"></div>
       </div>
@@ -1804,20 +1902,20 @@ async function viewRegion(code, id) {
         ${rangeSeg('pvRange', s.length)}
         <span class="spacer"></span>
         <div class="chips" id="pvToggle">
-          <span class="chip-static"><i id="pvSwatch"></i>매매 3개월 이동평균</span>
-          <button data-s="median" class="${state.pv.median ? 'on' : ''}" title="눌러서 켜고 끄기"><i class="dot" style="background:${css('--series-1-soft')}"></i>매매 월 중위값</button>
-          <button data-s="jeonse" class="${state.pv.jeonse ? 'on' : ''}" title="눌러서 켜고 끄기"><i style="background:${css('--series-2')}"></i>전세 3개월 이동평균</button>
+          <span class="chip-static"><i id="pvSwatch"></i>${L} 3개월 이동평균</span>
+          <button data-s="median" class="${state.pv.median ? 'on' : ''}" title="눌러서 켜고 끄기"><i class="dot" style="background:${css('--series-1-soft')}"></i>${L} 월 중위값</button>
+          ${J ? '' : `<button data-s="jeonse" class="${state.pv.jeonse ? 'on' : ''}" title="눌러서 켜고 끄기"><i style="background:${css('--series-2')}"></i>전세 3개월 이동평균</button>`}
         </div>
       </div>
       <div class="tv-box" id="pv"></div>
-      <p class="muted tv-note">아래 칸은 월별 매매 거래량 (점선 = 장기 평균 ${ind.volLong ?? '–'}건/월)${s.some((r) => r.bulk) ? ' · 노란 막대 = 일괄 거래(지표에서 제외)' : ''} · 휠·핀치로 확대</p>
+      <p class="muted tv-note">아래 칸은 월별 ${L} 거래량 (점선 = 장기 평균 ${(J ? ind.jeonse : ind).volLong ?? '–'}건/월)${!J && s.some((r) => r.bulk) ? ' · 노란 막대 = 일괄 거래(지표에서 제외)' : ''} · 휠·핀치로 확대</p>
     </div>
-    <div class="grid2">
-      <div class="card">
+    <div class="${J ? '' : 'grid2'}">
+      ${J ? '' : `<div class="card">
         <h2>거래 온도 ${tip('같은 단지·평형의 이전 거래와 비교한 비율 (3개월 이동평균). 신고가·상승 비율이 오르면 과열, 하락 비율이 상승 비율을 넘으면 꺾이는 신호예요.')}</h2>
         ${legend([['신고가', css('--up')], ['직전보다 오름', css('--series-2')], ['직전보다 내림', css('--down')]])}
         <div class="chart-box short"><canvas id="heat"></canvas></div>
-      </div>
+      </div>`}
       <div class="card">
         <h2>전세가율 추이 ${tip('평당 전세가 ÷ 평당 매매가 (3개월 이동평균). 오르면 매매가와 전세가의 갭이 좁아져 갭투자 수요가 들어오기 쉬워요.')}</h2>
         ${legend([['전세가율', css('--series-2')]])}
@@ -1833,7 +1931,8 @@ async function viewRegion(code, id) {
   bindMonths(`region.${code}`);
   bindKind();
 
-  priceVolumeChart(s, ind);
+  if (J) priceVolumeChart(jeonseView(s), ind.jeonse, L);
+  else priceVolumeChart(s, ind);
 
   const roll3 = (xs) => xs.map((_, i) => { const w = xs.slice(Math.max(0, i - 2), i + 1).filter((v) => v != null); return w.length === 3 ? w.reduce((a, b) => a + b) / 3 : null; });
   const done = s.slice(0, -1); // 신고 진행 중인 마지막 달 제외
@@ -1841,7 +1940,7 @@ async function viewRegion(code, id) {
   const lineDs = (label, data, color) => ({ label, data, borderColor: color, borderWidth: 2, pointRadius: 0, tension: 0.25, spanGaps: true });
   const lineOpts = { interaction: { mode: 'index', intersect: false }, scales: { x: { grid: { display: false }, ticks: { maxTicksLimit: 6, maxRotation: 0 } }, y: pctAxis },
     plugins: { tooltip: { callbacks: { label: (c) => ` ${c.dataset.label} ${fmtPct(c.raw, 0)}` } } } };
-  makeChart(document.getElementById('heat'), {
+  if (!J) makeChart(document.getElementById('heat'), {
     type: 'line',
     data: { labels: done.map((r) => fmtYm(r.ym)), datasets: [
       lineDs('신고가', roll3(done.map((r) => r.newHigh)), css('--up')),
@@ -1866,7 +1965,7 @@ async function viewRegion(code, id) {
 
   const thead = app.querySelector('thead'), tbody = app.querySelector('tbody'), q = document.getElementById('q');
   let watched = new Set();
-  const cols = [...APT_COLS, ['star', '', null, (r) => `<button class="star ${watched.has(r.key) ? 'on' : ''}" data-key="${esc(r.key)}" title="관심단지에 좋아요 (이 브라우저에 저장)">★</button>`]];
+  const cols = [...(J ? APT_J_COLS : APT_COLS), ['star', '', null, (r) => `<button class="star ${watched.has(r.key) ? 'on' : ''}" data-key="${esc(r.key)}" title="관심단지에 좋아요 (이 브라우저에 저장)">★</button>`]];
   const render = () => {
     watched = new Set(watch.list().filter((w) => w.code === code).map((w) => w.key));
     const term = q.value.trim();
@@ -1893,19 +1992,22 @@ async function viewRegion(code, id) {
 }
 
 // ---------- 지역 상세: 한국부동산원 주간지수·매입자 거주지 ----------
+// 전세 보기: 주간 전세지수만 보이고, 매매 기준인 외지인 매입 비중은 뺀다
 function rebCards(code, region) {
   const r = state.reb?.regions?.[code];
   if (!r) return '';
-  const w = r.ind?.weekly, b = r.ind?.buyers;
+  const w = r.ind?.weekly, b = r.ind?.buyers, J = isJ();
   const gg = region.group === '경기';
   return `<div class="grid2">
       ${r.weekly?.dates.length ? `<div class="card">
-        <h2>주간 아파트 가격지수 (한국부동산원) ${tip('한국부동산원이 매주 표본 아파트 시세를 조사한 지수예요 (2026.07.06 = 100). 실거래가 아니라 조사 가격이라 위 실거래 평당가와 다를 수 있지만, 신고를 기다리지 않아 최근 흐름을 더 빨리 보여줘요.')}</h2>
-        <p class="muted" style="margin:-6px 0 8px;font-size:13px">${fmtDate(w?.date)} 주 · 매매 1주 ${delta(w?.chg1w, 2)} · 4주 ${delta(w?.chg4w, 2)} · 12주 ${delta(w?.chg12w, 2)} · 전세 4주 ${delta(w?.jeonseChg4w, 2)}</p>
-        ${legend([['매매', css('--series-1')], ['전세', css('--series-2')]])}
+        <h2>주간 아파트 ${J ? '전세' : '가격'}지수 (한국부동산원) ${tip('한국부동산원이 매주 표본 아파트 시세를 조사한 지수예요 (2026.07.06 = 100). 실거래가 아니라 조사 가격이라 위 실거래 평당가와 다를 수 있지만, 신고를 기다리지 않아 최근 흐름을 더 빨리 보여줘요.')}</h2>
+        <p class="muted" style="margin:-6px 0 8px;font-size:13px">${fmtDate(w?.date)} 주 · ${J
+          ? `전세 1주 ${delta(w?.jeonseChg1w, 2)} · 4주 ${delta(w?.jeonseChg4w, 2)} · 12주 ${delta(w?.jeonseChg12w, 2)}`
+          : `매매 1주 ${delta(w?.chg1w, 2)} · 4주 ${delta(w?.chg4w, 2)} · 12주 ${delta(w?.chg12w, 2)} · 전세 4주 ${delta(w?.jeonseChg4w, 2)}`}</p>
+        ${J ? '' : legend([['매매', css('--series-1')], ['전세', css('--series-2')]])}
         <div class="chart-box short"><canvas id="rebWeekly"></canvas></div>
       </div>` : '<div></div>'}
-      ${r.buyers?.yms.length ? `<div class="card">
+      ${r.buyers?.yms.length && !J ? `<div class="card">
         <h2>외지인 매입 비중 ${tip(`이 지역 아파트를 산 사람 중 다른 시·구에 사는 사람의 비중이에요 (한국부동산원 매입자 거주지별 거래, 3개월 이동 합계). 장기 평균보다 높아지면 외부 수요(투자·갈아타기)가 몰리고 있다는 뜻이에요.${gg ? ' 서울 거주자 비중도 함께 보여줘요.' : ''}`)}</h2>
         <p class="muted" style="margin:-6px 0 8px;font-size:13px">${fmtYm(b?.ym)}까지 3개월 ${fmtPct(b?.outsideShare, 0)}${b?.outsideLong != null ? ` · 장기 평균 ${fmtPct(b.outsideLong, 0)}` : ''}${gg && b?.seoulShare != null ? ` · 서울 거주자 ${fmtPct(b.seoulShare, 0)}` : ''}</p>
         ${legend([['외지인', css('--series-4')], ...(gg ? [['서울 거주자', css('--series-1')]] : [])])}
@@ -1919,7 +2021,7 @@ function rebCharts(code, region, lineDs, lineOpts) {
   if (wEl) {
     makeChart(wEl, {
       type: 'line',
-      data: { labels: r.weekly.dates.map(fmtDate), datasets: [lineDs('매매', r.weekly.sale, css('--series-1')), lineDs('전세', r.weekly.jeonse, css('--series-2'))] },
+      data: { labels: r.weekly.dates.map(fmtDate), datasets: [...(isJ() ? [] : [lineDs('매매', r.weekly.sale, css('--series-1'))]), lineDs('전세', r.weekly.jeonse, css('--series-2'))] },
       options: { ...lineOpts, scales: { ...lineOpts.scales, y: { ticks: { callback: (v) => Number(v).toFixed(0) } } },
         plugins: { tooltip: { callbacks: { label: (c) => ` ${c.dataset.label} ${c.raw == null ? '–' : c.raw.toFixed(2)}` } } } },
     });
@@ -1949,15 +2051,20 @@ async function viewApt(code, key, id) {
   const savedMonths = watch.get(code, key)?.months;
   const months = opts.some(([m]) => m === savedMonths) ? savedMonths : getMonths(monthView, opts, 36);
   showLoading(`<div class="crumb"><a href="#/r/${code}">${esc(region.name)}</a> ›</div>${skeleton('불러오는 중… (처음 보는 기간은 30초 정도 걸릴 수 있어요)')}`);
-  const d = await getApt(code, key, months);
+  const J = isJ();
+  const d = await getApt(code, key, months, J);
   if (isStale(id)) return;
   destroyCharts();
   const { apt } = d;
   key = apt.key;
   const areaKey = `${code}:${key}`; // 다른 구에 같은 동·단지명이 있을 수 있어 지역 코드까지 포함
-  // 이번 방문에서 고른 평형 → 저장한 관심 평형 → 주력 평형 순
-  const has = (a) => d.areas.some((x) => x.area === a);
-  let areaSel = [state.aptArea?.[areaKey], watch.get(code, key)?.area].find(has) || d.areas[0].area;
+  // 평형별 전세 건수. 전세 보기는 전세가 많은 평형부터 보이고, 이번 달 매매만 있는 평형은 뺀다
+  const jCount = new Map();
+  d.rents.filter(A.isJeonse).forEach((t) => jCount.set(A.areaKey(t.area), (jCount.get(A.areaKey(t.area)) || 0) + 1));
+  const areas = J ? d.areas.filter((a) => !a.partialOnly).sort((a, b) => (jCount.get(b.area) || 0) - (jCount.get(a.area) || 0)) : d.areas;
+  // 이번 방문에서 고른 평형 → 저장한 관심 평형 → 주력 평형(전세 보기는 전세가 가장 많은 평형) 순
+  const has = (a) => areas.some((x) => x.area === a);
+  let areaSel = [state.aptArea?.[areaKey], watch.get(code, key)?.area].find(has) || areas[0].area;
 
   // 네이버는 통합검색의 부동산 박스(매물 수·호가)가 가장 확실하고, 호갱노노는 단지명 검색을 URL로 받는다.
   // KB·국토부는 검색어를 URL로 넘길 수 없어 클릭할 때 단지명을 복사해 붙여넣게 한다
@@ -1979,9 +2086,9 @@ async function viewApt(code, key, id) {
       <a href="https://rt.molit.go.kr/" target="_blank" rel="noopener" class="copy-name" title="단지명이 복사돼요. 검색창에 붙여넣으세요">국토부 실거래가</a>
       <span class="muted" id="copied" style="font-size:12px"></span>
     </p>
-    <div class="row" style="margin-bottom:16px"><span class="muted">전용면적</span><div class="seg" id="areas">${d.areas.map((a) => `<button data-a="${a.area}" class="${a.area === areaSel ? 'on' : ''}">${a.area}㎡ <span class="muted">(${a.partialOnly ? `이번 달 ${a.partialCount}건 · 신고 진행 중` : `매매 ${a.count}건${a.partialCount ? ` · 이번 달 ${a.partialCount}건` : ''}`})</span></button>`).join('')}</div></div>
+    <div class="row" style="margin-bottom:16px"><span class="muted">전용면적</span><div class="seg" id="areas">${areas.map((a) => `<button data-a="${a.area}" class="${a.area === areaSel ? 'on' : ''}">${a.area}㎡ <span class="muted">(${J ? `전세 ${jCount.get(a.area) || 0}건` : a.partialOnly ? `이번 달 ${a.partialCount}건 · 신고 진행 중` : `매매 ${a.count}건${a.partialCount ? ` · 이번 달 ${a.partialCount}건` : ''}`})</span></button>`).join('')}</div></div>
     <p class="watch-note" id="watchNote"></p>
-    <p class="muted">조회 기간에 매매 또는 전세 거래가 있는 전용면적이에요. 거래가 없던 면적은 고를 수 없고, 조회 기간을 늘리면 더 오래전에 거래된 면적도 보여요. 원본 면적을 소수 둘째 자리까지 구분합니다.${d.areas.some((a) => a.partialCount) ? ' 매매 건수는 지난달까지이고, 이번 달(신고 진행 중) 거래는 따로 셉니다.' : ''}${A.apartmentNames(code, apt.dong, apt.name, apt.jibun).length > 1 ? ` 원본 명칭: ${esc(A.apartmentNames(code, apt.dong, apt.name, apt.jibun).filter((n) => n !== apt.name).join(', '))}` : ''}</p><div id="areaView"></div>`;
+    <p class="muted">조회 기간에 매매 또는 전세 거래가 있는 전용면적이에요. 거래가 없던 면적은 고를 수 없고, 조회 기간을 늘리면 더 오래전에 거래된 면적도 보여요. 원본 면적을 소수 둘째 자리까지 구분합니다.${!J && d.areas.some((a) => a.partialCount) ? ' 매매 건수는 지난달까지이고, 이번 달(신고 진행 중) 거래는 따로 셉니다.' : ''}${A.apartmentNames(code, apt.dong, apt.name, apt.jibun).length > 1 ? ` 원본 명칭: ${esc(A.apartmentNames(code, apt.dong, apt.name, apt.jibun).filter((n) => n !== apt.name).join(', '))}` : ''}</p><div id="areaView"></div>`;
   bindMonths(monthView, (m) => watch.setMonths(code, key, m));
   app.querySelectorAll('.copy-name').forEach((a) => a.addEventListener('click', () => {
     navigator.clipboard?.writeText(apt.name).then(() => {
@@ -2020,6 +2127,7 @@ async function viewApt(code, key, id) {
   function renderArea() {
     destroyCharts();
     const sel = d.areas.find((a) => a.area === areaSel);
+    if (J) { renderJeonseArea(sel); return; }
     // 이번 달에만 거래가 있는 평형: 시세·차트 없이 신고 진행 중인 거래와 전세만 보여 준다
     if (sel.partialOnly) {
       const cur = d.partial.filter((t) => A.areaKey(t.area) === areaSel);
@@ -2085,6 +2193,54 @@ async function viewApt(code, key, id) {
 
     aptChart(sel, trades, jeonse);
   }
+  // 전세 보기: 이 평형의 전세 시세·차트·최근 전세만. 매매는 전세가율·갭 계산에만 쓴다
+  function renderJeonseArea(sel) {
+    const el = document.getElementById('areaView');
+    const jeonse = d.rents.filter((t) => A.areaKey(t.area) === areaSel && A.isJeonse(t));
+    if (!jeonse.length) {
+      el.innerHTML = `<p class="card muted">이 평형은 조회 기간에 전세 거래가 없어요. 다른 평형을 고르거나 조회 기간을 늘려 보세요. 위에서 매매로 바꾸면 매매 거래를 볼 수 있어요.</p>`;
+      return;
+    }
+    const ind = sel.indicators, jind = A.jeonseIndicators(sel.series);
+    const sales = d.trades.filter((t) => !t.bulk && A.areaKey(t.area) === areaSel);
+    const recent = median(jeonse.slice(-3).map((t) => t.deposit));
+    const sRecent = median(sales.slice(-3).map((t) => t.price));
+    const max = jeonse.reduce((a, b) => (b.deposit > a.deposit ? b : a));
+    const last = jeonse[jeonse.length - 1];
+    const dd = (date) => date.slice(2).replace(/-/g, '.');
+    el.innerHTML = `
+      <p class="muted">${SALE_ONLY_NOTE}</p>
+      <div class="kpis">
+        <div class="kpi"><div class="label">최근 전세 (최근 3건 중위)</div><div class="value num">${fmtEok(recent)}</div><div class="hint">마지막 ${dd(last.date)} · ${last.floor}층 ${fmtEok(last.deposit)}</div></div>
+        <div class="kpi"><div class="label">기간 내 최고 보증금</div><div class="value num">${fmtEok(max.deposit)}</div><div class="hint">${dd(max.date)} · ${max.floor}층</div></div>
+        <div class="kpi"><div class="label">최고 보증금 대비</div><div class="value num">${delta(recent / max.deposit - 1)}</div><div class="hint">6개월 이동평균 3개월 변화 ${delta(jind.chg3m)}</div></div>
+        <div class="kpi"><div class="label">전세가율</div><div class="value num">${fmtPct(ind.jeonseRatio, 0)}</div><div class="hint">매매 최근 3건 중위 ${fmtEok(sRecent)} · 갭 ${recent && sRecent ? fmtEok(sRecent - recent) : '–'}</div></div>
+      </div>
+      <div class="card">
+        <div class="tv-head">
+          <div class="tv-label">${areaSel}㎡ 전세가 <span class="muted">6개월 이동평균</span> ${tip('점 하나가 전세 실거래 1건이에요. 점을 누르면 그 거래의 상세 정보가 나오고, 카드에서 기준으로 잡으면 다른 거래·시점의 등락률을 보여줘요. 월봉은 그 달 첫 거래→마지막 거래가 몸통, 최저~최고가 꼬리예요. 아래 칸은 월별 전세 건수. 1~3층을 끄면 점·월봉·건수에서만 빠지고 이동평균은 그대로예요.')}</div>
+          <div class="tv-value num" id="apValue"></div>
+          <div class="tv-sub num" id="apSub"></div>
+        </div>
+        <div class="row tv-ctrl">
+          ${rangeSeg('apRange', sel.series.length)}
+          <div class="seg" id="apMode">${[['dots', '실거래'], ['candle', '월봉']].map(([m, l]) => `<button data-m="${m}" class="${state.ap.mode === m ? 'on' : ''}">${l}</button>`).join('')}</div>
+          <span class="spacer"></span>
+          <div class="chips" id="apToggle">
+            <span class="chip-static"><i id="apSwatch"></i>전세 6개월 이동평균</span>
+            <span class="chip-static"><i class="dot" style="background:${css('--series-2')}"></i><span id="apKind">${state.ap.mode === 'dots' ? '전세 실거래' : '전세 월봉'}</span></span>
+            <button data-s="low" class="${state.ap.low ? 'on' : ''}" title="저층(1~3층·지하)은 시세보다 낮게 거래되는 경우가 많아요. 눌러서 켜고 끄기">1~3층 포함</button>
+          </div>
+        </div>
+        <div class="tv-stage"><div class="tv-box" id="ap"></div><div class="tv-pop" id="apPop" hidden></div></div>
+        <p class="muted tv-note">점이나 월봉을 누르면 상세 정보가 나와요</p>
+      </div>
+      <div class="card table-wrap"><h2>최근 전세</h2><table><thead><tr><th class="l">계약일</th><th>층</th><th>보증금</th><th>평당 전세가</th><th class="l">원본 명칭</th></tr></thead><tbody>
+        ${jeonse.slice(-40).reverse().map((t) => `<tr><td class="l">${dd(t.date)}</td><td>${t.floor}</td><td>${fmtEok(t.deposit)}</td><td>${fmtMan(t.deposit / (t.area / PYEONG))}</td><td class="l muted">${esc(t.sourceApt || t.apt)}</td></tr>`).join('')}
+      </tbody></table></div>`;
+    // 전세 거래를 차트의 주 시리즈로: 보증금을 price 자리에, 전세 이동평균을 ma 자리에
+    aptChart({ ...sel, series: sel.series.map((r) => ({ ...r, ma: r.jeonseMa, jeonseMa: null })) }, jeonse.map((t) => ({ ...t, price: t.deposit })), [], '전세');
+  }
   renderArea();
 }
 
@@ -2101,7 +2257,7 @@ function viewPrivacy() {
     <h2>브라우저에만 저장하는 것</h2>
     <ul>
       <li>관심단지(★)와 관심 평형, 좋아요한 지역(♥) — 동기화 코드를 만들거나 연결하지 않으면 서버로 보내지 않아요(아래).</li>
-      <li>테마, 화면 설정(첫 방문 안내를 닫았는지 포함), 관심단지별 마지막 확인 시점 — 서버로 보내지 않아요.</li>
+      <li>테마, 화면 설정(매매/전세 보기, 첫 방문 안내를 닫았는지 포함), 관심단지별 마지막 확인 시점 — 서버로 보내지 않아요.</li>
       <li>무작위 기기 ID와 첫 방문 시각 — 측정에 써요(아래).</li>
     </ul>
 
@@ -2117,7 +2273,7 @@ function viewPrivacy() {
     <h2>측정을 위해 보내는 것</h2>
     <ul>
       <li><b>무작위 기기 ID</b>: 이 브라우저에서 처음 만든 임의의 값이에요. 사람이나 기기 정보와 연결되지 않고, 다른 브라우저·기기와 공유되지 않아요.</li>
-      <li><b>행동 종류</b>: 방문, 화면 종류(개요·지역·단지·관심단지), 검색 결과 선택(지역인지 단지인지만), 관심단지 추가·삭제와 개수, 관심 평형을 골랐는지 여부(어떤 평형인지는 보내지 않아요), 첫 방문 안내를 보거나 닫거나 검색을 시작했는지, 관심단지의 새 거래 유무·건수와 확인 여부, 동기화 코드 만들기·연결·재발급·삭제·해제와 충돌 여부(코드는 보내지 않아요).</li>
+      <li><b>행동 종류</b>: 방문, 화면 종류(개요·지역·단지·관심단지), 검색 결과 선택(지역인지 단지인지만), 관심단지 추가·삭제와 개수, 관심 평형을 골랐는지 여부(어떤 평형인지는 보내지 않아요), 첫 방문 안내를 보거나 닫거나 검색을 시작했는지, 관심단지의 새 거래 유무·건수와 확인 여부, 동기화 코드 만들기·연결·재발급·삭제·해제와 충돌 여부(코드는 보내지 않아요), 매매/전세 보기를 바꿨는지와 전세 보기에서 본 화면인지.</li>
       <li><b>첫 방문 시각, 모바일 여부</b>, 서버가 받은 시각, 측정 방식 버전.</li>
     </ul>
 
@@ -2375,8 +2531,10 @@ async function viewWatch(id) {
   const help = no
     ? "저장한 관심 평형(고르지 않았으면 주력 평형) 기준이에요. 지난번 확인한 뒤의 데이터 갱신에서 처음 확인된 실거래를 '새로 확인'으로 표시해요. 계약일이 지난 거래가 늦게 신고돼도 잡혀요. 단지를 눌러 상세를 보면 확인한 것으로 바뀌어요. '이번 달 · 신고 진행 중' 거래는 새로 확인된 거래로는 보여 주지만, 시세·차트에는 다음 달부터 반영해요."
     : '저장한 관심 평형(고르지 않았으면 주력 평형) 기준이에요. 눌러서 상세를 볼 수 있어요.';
+  const J = isJ();
   const [held, card] = syncSlots();
-  app.innerHTML = `<div class="row"><h1>관심단지 ${tip(help)}</h1><span class="spacer"></span>${no ? `<span class="muted" style="font-size:12px">${md(buildDate(no))} 갱신</span><button type="button" class="btn" id="checkAll" hidden>모두 확인</button>` : ''}</div>
+  app.innerHTML = `<div class="row"><h1>관심단지 ${tip(J ? '저장한 관심 평형(고르지 않았거나 그 평형에 전세가 없으면 전세가 가장 많은 평형)의 전세 시세예요. 눌러서 상세를 볼 수 있어요.' : help)}</h1><span class="spacer"></span>${no ? `<span class="muted" style="font-size:12px">${md(buildDate(no))} 갱신</span>${J ? '' : '<button type="button" class="btn" id="checkAll" hidden>모두 확인</button>'}` : ''}</div>
+    ${J ? `<p class="muted">${SALE_ONLY_NOTE}</p>` : ''}
     ${held}<div class="watch-grid">${list.map((w, i) => `
     <div class="card" data-href="#/a/${w.code}/${encodeURIComponent(w.key)}" data-i="${i}" id="w${i}">
       <div class="row"><b>${esc(w.name)}</b><span class="spacer"></span><span class="muted">${esc(w.region)}</span></div>
@@ -2384,8 +2542,8 @@ async function viewWatch(id) {
     </div>`).join('')}</div>
     ${list.length > 1 ? `<div class="card" style="margin-top:16px">
       <div class="row" style="margin-bottom:8px"><h2 style="margin:0">단지 비교 — 관심 평형</h2><span class="spacer"></span>
-        <div class="seg" id="cmpMode"><button data-m="ppy" class="on">평당가</button><button data-m="idx">상승률 (3년 전 = 100)</button></div></div>
-      <p class="muted" style="margin:0 0 8px;font-size:12px">6개월 이동평균 · 평형이 달라도 비교할 수 있게 평당가로 맞췄어요${list.length > CMP_MAX ? ` · 처음 ${CMP_MAX}개 단지만 보여요` : ''}</p>
+        <div class="seg" id="cmpMode"><button data-m="ppy" class="on">${J ? '평당 전세가' : '평당가'}</button><button data-m="idx">상승률 (3년 전 = 100)</button></div></div>
+      <p class="muted" style="margin:0 0 8px;font-size:12px">${J ? '전세 ' : ''}6개월 이동평균 · 평형이 달라도 비교할 수 있게 평당가로 맞췄어요${list.length > CMP_MAX ? ` · 처음 ${CMP_MAX}개 단지만 보여요` : ''}</p>
       <div id="cmpLegend"></div>
       <div class="chart-box"><canvas id="cmp"></canvas></div>
     </div>` : ''}${card}`;
@@ -2417,10 +2575,10 @@ async function viewWatch(id) {
     const checkedLine = no && buildDate(since) ? `마지막 확인 ${md(buildDate(since))}` : '';
     let d;
     try {
-      d = await getApt(w.code, w.key, 36);
+      d = await getApt(w.code, w.key, 36, J);
     } catch (e) {
       if (isStale(id)) return;
-      if (!gone.length) { el.querySelector(':scope > .muted').textContent = `오류: ${e.message}`; return; }
+      if (!gone.length || J) { el.querySelector(':scope > .muted').textContent = `오류: ${e.message}`; return; }
       document.getElementById('checkAll')?.removeAttribute('hidden');
       el.innerHTML = `
         <div class="row"><b>${esc(w.name)}</b><span class="tag">삭제 ${gone.length}건</span><span class="spacer"></span><span class="muted">${esc(w.region)}</span></div>
@@ -2431,6 +2589,7 @@ async function viewWatch(id) {
     }
     try {
       if (isStale(id)) return;
+      if (J) { jeonseCard(w, i, el, d); return; }
       // 관심 평형이 최근 3년 매매에 없으면(전세만 있거나 이번 달에만 있거나 오래전 거래만 있음) 주력 평형으로 요약한다
       const picked = w.area && d.areas.find((a) => a.area === w.area && !a.partialOnly && a.count > 0);
       const main = picked || d.areas[0];
@@ -2479,6 +2638,31 @@ async function viewWatch(id) {
       if (!isStale(id)) el.querySelector(':scope > .muted').textContent = `오류: ${e.message}`;
     }
   }));
+  // 전세 보기 카드: 관심 평형(그 평형에 최근 3년 전세가 없으면 전세가 가장 많은 평형)의 전세 시세.
+  // 새로 확인된 거래·신고가·급등·삭제는 매매로만 판정하므로 보여 주지 않는다 (측정의 변화 유무도 보내지 않는다)
+  function jeonseCard(w, i, el, d) {
+    const jAll = d.rents.filter(A.isJeonse);
+    const jn = (area) => jAll.filter((t) => A.areaKey(t.area) === area).length;
+    const usable = d.areas.filter((a) => !a.partialOnly && jn(a.area));
+    const picked = w.area && usable.find((a) => a.area === w.area);
+    const main = picked || usable.sort((a, b) => jn(b.area) - jn(a.area))[0];
+    if (!main) {
+      el.innerHTML = `<div class="row"><b>${esc(w.name)}</b><span class="spacer"></span><span class="muted">${esc(w.region)}</span></div>
+        <div class="muted" style="margin-top:8px">최근 3년 전세 거래가 없어요</div>`;
+      return;
+    }
+    const jr = jAll.filter((t) => A.areaKey(t.area) === main.area);
+    const recentJ = median(jr.slice(-3).map((t) => t.deposit));
+    const maxJ = Math.max(...jr.map((t) => t.deposit));
+    const last = jr[jr.length - 1];
+    if (i < CMP_MAX) cmp[i] = { name: w.name, series: main.series.map((r) => ({ ym: r.ym, v: r.jeonseMa == null ? null : r.jeonseMa / (Number(main.area) / PYEONG) })) };
+    el.innerHTML = `
+      <div class="row"><b>${esc(w.name)}</b><span class="spacer"></span><span class="muted">${esc(w.region)}</span></div>
+      <div class="row" style="margin-top:8px"><span class="num" style="font-size:20px;font-weight:600">${fmtEok(recentJ)}</span><span class="muted">${main.area}㎡ ${picked ? '관심 평형' : '전세 주력 평형'} 전세</span><span class="spacer"></span>${sparkline(main.series.map((s) => s.jeonseMa), 100, 28)}</div>
+      ${w.area && !picked ? `<div class="muted" style="font-size:12px">관심 평형 ${w.area}㎡은 최근 3년 전세가 없어 전세가 가장 많은 평형으로 보여요</div>` : ''}
+      <div class="row" style="font-size:12px;margin-top:6px">최고 보증금 대비 ${delta(recentJ / maxJ - 1)} · 전세가율 ${fmtPct(main.indicators.jeonseRatio, 0)}</div>
+      <div class="muted" style="font-size:12px;margin-top:6px">${main.area}㎡ 최근 전세 계약 ${fmtDate(last.date)} · 최근 3년 ${jr.length}건</div>`;
+  }
   if (isStale(id)) return;
   if (changed.length) metrics.track('watch_change_available', { b: buildId(), c: changed.length, t: changed.reduce((a, b) => a + b, 0) });
   if (list.length < 2) return;
@@ -2517,4 +2701,5 @@ function compareChart(items) {
   }));
 }
 
+initDeal();
 route();

@@ -89,7 +89,7 @@ function write(rel, data) {
     const { series, indicators } = an.regionSummary(yms, trades, rents);
     indicators.candidate = failed ? null : an.candidateScore(indicators, series);
     if (mode() === 'live' && !failed) panels.push(forecast.preparePanel(r.code, yms, trades, rents));
-    write(`data/overview/${r.code}.json`, { code: r.code, series: series.slice(-OVERVIEW_MONTHS).map(({ ym, ma, count }) => ({ ym, ma, count })), indicators });
+    write(`data/overview/${r.code}.json`, { code: r.code, series: series.slice(-OVERVIEW_MONTHS).map(({ ym, ma, count, jeonseMa }) => ({ ym, ma, count, jeonseMa })), indicators });
     if (obs) {
       // 신고가·급등·국면처럼 여러 달을 보는 변화는 이 지역 매매 수집이 모두 성공했을 때만 확정한다
       // (거래 변화는 이번 달까지, 국면은 완성된 달로 계산하므로 완성된 달만)
