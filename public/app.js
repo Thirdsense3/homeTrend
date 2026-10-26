@@ -624,7 +624,13 @@ function trackRange(chart, s, ma, line, onChange, label, swatch, extra = () => [
     const lo = Math.max(0, Math.ceil(lr?.from ?? 0)), hi = Math.min(last, Math.floor(lr?.to ?? last));
     const idx = [];
     for (let i = lo; i <= hi; i++) if (ma[i] != null) idx.push(i);
-    if (idx.length < 2) return;
+    // 이동평균이 2개 미만인 구간: 선 색·큰 숫자는 그대로 두고 최고·최저만 지운다. 정책 표식은 켜고 끈 상태대로 다시 그린다
+    if (idx.length < 2) {
+      markers.setMarkers(extra());
+      extremes.forEach((l) => line.removePriceLine(l));
+      extremes = [];
+      return;
+    }
     const a = idx[0], b = idx[idx.length - 1];
     const c = css(ma[b] >= ma[a] ? '--up' : '--down');
     line.applyOptions({ lineColor: c, topColor: alpha(c, 0.18), bottomColor: alpha(c, 0) });
