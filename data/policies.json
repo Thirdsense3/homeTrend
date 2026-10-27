@@ -1,0 +1,148 @@
+{
+  "updated": "2026-10-25",
+  "items": [
+    {
+      "id": "2022-11-regulated-area-release",
+      "announced": "2022-11-10",
+      "effective": "2022-11-14",
+      "ended": null,
+      "title": "서울·과천·성남(분당·수정)·하남·광명 외 규제지역 해제",
+      "category": "규제지역",
+      "regions": ["41133", "41173", "41171", "41465", "41463", "41117", "41115", "41113", "41111", "41430", "41410", "41310", "41360", "41285", "41287", "41281", "41570", "41597", "41595", "41593", "41591"],
+      "summary": "서울과 경기 과천·성남(분당·수정)·하남·광명을 뺀 경기 지역을 투기과열지구·조정대상지역에서 해제했다.",
+      "source": "https://www.korea.kr/news/policyNewsView.do?newsId=148908107"
+    },
+    {
+      "id": "2023-01-regulated-area-release",
+      "announced": "2023-01-03",
+      "effective": "2023-01-05",
+      "ended": null,
+      "title": "강남3구·용산 외 규제지역 해제 (1·3 대책)",
+      "category": "규제지역",
+      "regions": ["11200", "11440", "11110", "11140", "11215", "11740", "11590", "11470", "11560", "11410", "11230", "11500", "11620", "11290", "11380", "11530", "11545", "11260", "11350", "11305", "11320", "41290", "41210", "41135", "41131", "41450"],
+      "summary": "강남·서초·송파·용산구를 뺀 서울 21개 구와 경기 과천·광명·성남(분당·수정)·하남을 투기과열지구·조정대상지역에서 해제했다. 민간택지 분양가상한제는 대상이 달라, 서울 14개 구와 경기 과천·하남·광명의 지정 동 236곳을 해제했다(강남·서초·송파·용산은 유지).",
+      "source": "https://www.korea.kr/news/policyNewsView.do?newsId=148910119"
+    },
+    {
+      "id": "2023-12-stress-dsr-1",
+      "announced": "2023-12-27",
+      "effective": "2024-02-26",
+      "ended": null,
+      "title": "스트레스 DSR 1단계 (은행권 주택담보대출)",
+      "category": "대출",
+      "regions": ["all"],
+      "summary": "은행권 주택담보대출의 DSR을 계산할 때 금리 상승 가능성을 반영한 가산금리(스트레스 금리)를 더한다. 1단계 상반기 스트레스 금리는 0.38%p.",
+      "source": "https://www.fsc.go.kr/no010101/81777"
+    },
+    {
+      "id": "2024-08-housing-supply",
+      "announced": "2024-08-08",
+      "effective": null,
+      "ended": null,
+      "title": "주택공급 확대방안 (8·8 대책)",
+      "category": "공급",
+      "regions": ["서울", "경기"],
+      "summary": "그린벨트 해제로 신규택지 8만 호, 3기 신도시 2만 호 추가 등 서울·수도권에 6년간 42.7만 호 이상 공급 계획. 신규택지 발표 전까지 서울 그린벨트를 토지거래허가구역으로 지정.",
+      "source": "https://www.molit.go.kr/USR/NEWS/m_71/dtl.jsp?id=95090063"
+    },
+    {
+      "id": "2024-08-stress-dsr-2",
+      "announced": "2024-08-20",
+      "effective": "2024-09-01",
+      "ended": null,
+      "title": "스트레스 DSR 2단계 (수도권 주담대 1.2%p)",
+      "category": "대출",
+      "regions": ["all"],
+      "summary": "스트레스 금리를 0.75%p로 올리고, 수도권 은행권 주택담보대출은 1.2%p를 적용한다. 은행권 신용대출과 2금융권 주택담보대출로 대상을 넓혔다.",
+      "source": "https://www.korea.kr/news/policyNewsView.do?newsId=148932842"
+    },
+    {
+      "id": "2025-02-seoul-land-permit-release",
+      "announced": "2025-02-12",
+      "effective": "2025-02-13",
+      "ended": null,
+      "title": "잠실·삼성·대치·청담 토지거래허가구역 해제",
+      "category": "토지거래허가",
+      "regions": ["11680", "11710"],
+      "summary": "서울시가 국제교류복합지구 인근 4개 동(잠실·삼성·대치·청담) 아파트 305곳 중 291곳의 토지거래허가구역 지정을 해제했다. 재건축 아파트 14곳은 유지.",
+      "source": "https://mediahub.seoul.go.kr/archives/2013415"
+    },
+    {
+      "id": "2025-03-gangnam-yongsan-land-permit",
+      "announced": "2025-03-19",
+      "effective": "2025-03-24",
+      "ended": null,
+      "title": "강남3구·용산 아파트 전체 토지거래허가구역 지정",
+      "category": "토지거래허가",
+      "regions": ["11680", "11650", "11710", "11170"],
+      "summary": "강남·서초·송파·용산구의 아파트 전체를 토지거래허가구역으로 지정했다(처음 기간 2025-09-30까지). 2025-09-17에 2026-12-31까지 다시 지정했다.",
+      "source": "https://www.molit.go.kr/USR/NEWS/m_71/dtl.jsp?id=95090779"
+    },
+    {
+      "id": "2025-05-stress-dsr-3",
+      "announced": "2025-05-20",
+      "effective": "2025-07-01",
+      "ended": null,
+      "title": "스트레스 DSR 3단계 (스트레스 금리 1.5%p)",
+      "category": "대출",
+      "regions": ["all"],
+      "summary": "DSR이 적용되는 사실상 모든 가계대출에 스트레스 금리 1.5%p를 적용한다. 지방 주택담보대출은 0.75%p를 유지했다.",
+      "source": "https://www.fsc.go.kr/no010101/84617"
+    },
+    {
+      "id": "2025-06-mortgage-cap",
+      "announced": "2025-06-27",
+      "effective": "2025-06-28",
+      "ended": null,
+      "title": "수도권·규제지역 주담대 최대 6억 원 (6·27 대책)",
+      "category": "대출",
+      "regions": ["서울", "경기"],
+      "summary": "수도권·규제지역의 주택 구입 목적 주택담보대출 한도를 6억 원으로 제한하고, 다주택자의 수도권 주택 구입용 주담대를 막았다. 생애최초 LTV는 70%로 낮추고 6개월 안 전입 의무를 두었다.",
+      "source": "https://www.korea.kr/news/policyNewsView.do?newsId=148945077"
+    },
+    {
+      "id": "2025-09-housing-supply",
+      "announced": "2025-09-07",
+      "effective": null,
+      "ended": null,
+      "title": "주택공급 확대방안 (9·7 대책)",
+      "category": "공급",
+      "regions": ["서울", "경기"],
+      "summary": "2026~2030년 수도권에 착공 기준 135만 호(연 27만 호) 공급 계획. 공공택지는 LH가 직접 시행하고, 노후 공공임대·공공청사·유휴부지로 도심 공급을 늘린다.",
+      "source": "https://www.molit.go.kr/USR/NEWS/m_71/dtl.jsp?id=95091185"
+    },
+    {
+      "id": "2025-10-market-stabilization",
+      "announced": "2025-10-15",
+      "effective": "2025-10-16",
+      "ended": null,
+      "title": "서울 전역·경기 12곳 규제지역·토지거래허가구역 지정 (10·15 대책)",
+      "category": "규제지역",
+      "regions": ["서울", "41290", "41210", "41135", "41131", "41133", "41117", "41111", "41115", "41173", "41465", "41430", "41450"],
+      "summary": "서울 전역과 경기 12곳(과천·광명·성남 분당·수정·중원·수원 영통·장안·팔달·안양 동안·용인 수지·의왕·하남)을 조정대상지역·투기과열지구로 지정하고, 같은 지역 아파트를 토지거래허가구역으로 지정했다(10-20부터, 2026-12-31까지). 주담대 한도를 집값 15억~25억 원 4억 원, 25억 원 초과 2억 원으로 줄였다.",
+      "source": "https://www.korea.kr/news/policyNewsView.do?newsId=148950973"
+    },
+    {
+      "id": "2026-04-household-debt",
+      "announced": "2026-04-01",
+      "effective": "2026-04-17",
+      "ended": null,
+      "title": "2026년 가계부채 관리방안 (다주택자 주담대 만기연장 제한)",
+      "category": "대출",
+      "regions": ["서울", "경기"],
+      "summary": "주택 2채 이상 보유자와 임대사업자의 수도권·규제지역 아파트 담보대출 만기연장을 원칙적으로 막는다(임대차 계약 종료일까지 등 예외 있음). 가계부채 총량 증가율 목표 1.5%.",
+      "source": "https://www.fsc.go.kr/no010101/86606"
+    },
+    {
+      "id": "2026-08-housing-supply",
+      "announced": "2026-08-13",
+      "effective": null,
+      "ended": null,
+      "title": "주택 신속공급 방안과 금융 종합대책",
+      "category": "공급",
+      "regions": ["서울", "경기"],
+      "summary": "9·7 대책 계획에 더해 신규택지 10만 호 등 수도권 23만 호 이상을 추가 공급하고, 부동산 PF 보증·자금지원을 47.8조 원 이상으로 늘린다. 올해 가계부채 총량 증가율 목표를 3% 수준으로 올렸다.",
+      "source": "https://www.korea.kr/news/policyNewsView.do?newsId=148970016"
+    }
+  ]
+}

@@ -1,6 +1,6 @@
 /* homeTrend 프론트엔드 — 해시 라우팅 + Chart.js */
 const app = document.getElementById('app');
-const state = { meta: null, overview: {}, raw: {}, charts: [], sort: { overview: ['chg3m', -1], overviewJ: ['chg3m', -1], apts: ['count12m', -1] }, deal: 'sale', pv: { median: true, jeonse: true }, ap: { mode: 'dots', jeonse: true, low: true } };
+const state = { meta: null, overview: {}, raw: {}, charts: [], sort: { overview: ['chg3m', -1], overviewJ: ['chg3m', -1], apts: ['count12m', -1] }, deal: 'sale', pv: { median: true, jeonse: true, policy: true }, ap: { mode: 'dots', jeonse: true, low: true, policy: true } };
 // 정적 사이트(GitHub Pages): 빌드된 data/*.json을 읽는다. 로컬 서버: /api/* 를 호출한다
 const STATIC = !!window.HT_STATIC;
 const A = window.Analyze;
@@ -24,6 +24,8 @@ const rebInd = (code) => state.reb?.regions?.[code]?.ind;
 // 변화 파일 (scripts/build.js, lib/changes.js): 오늘 확인된 변화와 최근 30일 삭제·급등·국면 변화. 이력이 없는 빌드·로컬 서버는 null
 const getChanges = () => (state.changesPromise ||= (STATIC && state.meta?.buildNo ? api('data/changes.json') : Promise.reject()).catch(() => null));
 const getRecent = () => (state.recentPromise ||= (STATIC && state.meta?.buildNo ? api('data/changes-30d.json') : Promise.reject()).catch(() => null));
+// 정책 자료 (data/policies.json, 로드맵 9번). 없거나 실패하면 null → 차트 표식·타임라인을 그리지 않는다
+const getPolicies = () => (state.policyPromise ||= api(STATIC ? 'data/policies.json' : '/api/policies').then((d) => (state.policies = d)).catch(() => (state.policies = null)));
 const getForecasts = () => (state.forecastPromise ||= api(STATIC ? 'data/forecasts.json' : '/api/forecasts').then((d) => (state.forecasts = d)).catch(() => (state.forecasts = { status: 'unavailable', regions: {}, validation: {} })));
 
 // ---------- 방문 측정 (개인정보처리방침 #/privacy, 규칙은 infra/functions/metrics/metrics.mjs) ----------
@@ -612,8 +614,8 @@ function tvChart(el) {
 
 // 보이는 구간이 바뀔 때: 이동평균이 있는 첫(a)·끝(b) 달을 찾아 선 색(올랐으면 빨강·내렸으면 파랑)과
 // 구간 최고·최저(점 + 가로 점선, 값은 오른쪽 축 — 점 옆 글자는 차트 가장자리에서 잘린다)를 갱신하고 onChange(a, b)
-// label: 축 라벨에 붙일 이름('매매'), swatch: 선 색을 따라 바뀌는 범례 표시
-function trackRange(chart, s, ma, line, onChange, label, swatch) {
+// label: 축 라벨에 붙일 이름('매매'), swatch: 선 색을 따라 바뀌는 범례 표시, extra: 함께 그릴 표식(정책 발표일)
+function trackRange(chart, s, ma, line, onChange, label, swatch, extra = () => []) {
   const last = s.length - 1;
   const markers = LWC.createSeriesMarkers(line, []);
   let extremes = [];
@@ -622,7 +624,13 @@ function trackRange(chart, s, ma, line, onChange, label, swatch) {
     const lo = Math.max(0, Math.ceil(lr?.from ?? 0)), hi = Math.min(last, Math.floor(lr?.to ?? last));
     const idx = [];
     for (let i = lo; i <= hi; i++) if (ma[i] != null) idx.push(i);
-    if (idx.length < 2) return;
+    // 이동평균이 2개 미만인 구간: 선 색·큰 숫자는 그대로 두고 최고·최저만 지운다. 정책 표식은 켜고 끈 상태대로 다시 그린다
+    if (idx.length < 2) {
+      markers.setMarkers(extra());
+      extremes.forEach((l) => line.removePriceLine(l));
+      extremes = [];
+      return;
+    }
     const a = idx[0], b = idx[idx.length - 1];
     const c = css(ma[b] >= ma[a] ? '--up' : '--down');
     line.applyOptions({ lineColor: c, topColor: alpha(c, 0.18), bottomColor: alpha(c, 0) });
@@ -630,7 +638,7 @@ function trackRange(chart, s, ma, line, onChange, label, swatch) {
     let hiI = a, loI = a;
     idx.forEach((i) => { if (ma[i] > ma[hiI]) hiI = i; if (ma[i] < ma[loI]) loI = i; });
     const ext = hiI === loI ? [] : [[hiI, `${label} 최고`, css('--up')], [loI, `${label} 최저`, css('--down')]].sort((x, y) => x[0] - y[0]);
-    markers.setMarkers(ext.map(([i, , color]) => ({ time: ymSec(s[i].ym), position: 'inBar', shape: 'circle', color, size: 0.6 })));
+    markers.setMarkers([...ext.map(([i, , color]) => ({ time: ymSec(s[i].ym), position: 'inBar', shape: 'circle', color, size: 0.6 })), ...extra()].sort((x, y) => x.time - y.time));
     extremes.forEach((l) => line.removePriceLine(l));
     // 지금이 최고·최저면 축의 현재값 라벨과 겹치므로 선은 생략
     extremes = ext.filter(([i]) => i !== b).map(([i, title, color]) => line.createPriceLine({ price: ma[i], color: alpha(color, 0.5), lineWidth: 1, lineStyle: LWC.LineStyle.Dotted, axisLabelVisible: true, title }));
@@ -656,13 +664,29 @@ const rangeSeg = (id, n, opts = [[12, '1년'], [36, '3년'], [60, '5년'], [0, '
 const headJoin = (parts) => parts.filter(Boolean).map((x) => `<span>${x}</span>`).join('<span class="sep">·</span>');
 const volFmt = { type: 'custom', minMove: 1, formatter: (v) => `${Math.round(v)}건` };
 
+// 정책 발표일 (로드맵 9번): 발표한 달의 선 위에 작은 ▼. 같은 달 여러 건은 표식 하나로 두고 설명 줄에 적는다.
+// 이동평균이 없는 달(처음 몇 달·신고 진행 중인 달)은 표식 없이 설명 줄에만 나온다
+function policyLayer(s, list, ma) {
+  const byYm = new Map();
+  list.forEach((p) => { const ym = p.announced.slice(0, 4) + p.announced.slice(5, 7); byYm.set(ym, [...(byYm.get(ym) || []), p]); });
+  return {
+    any: s.some((r) => byYm.has(r.ym)),
+    at: (ym) => byYm.get(ym) || [],
+    markers: () => s.flatMap((r, i) => (byYm.has(r.ym) && ma[i] != null ? [{ time: ymSec(r.ym), position: 'aboveBar', shape: 'arrowDown', color: css('--ink-2'), size: 0.5 }] : [])),
+  };
+}
+const policyHead = (ps) => (ps.length ? `<span class="pol-mark">▼</span> ${esc(ps[0].title)}${ps.length > 1 ? ` 외 ${ps.length - 1}건` : ''}` : '');
+const policyChip = (on) => `<button data-s="policy" class="${on ? 'on' : ''}" title="정책 발표일을 차트에 표시해요. 눌러서 켜고 끄기"><span class="pol-mark">▼</span>정책 발표</button>`;
+const policyNote = (code) => ` · <span class="pol-mark">▼</span> = 정책 발표 (<a href="#/policy/${code}">이 지역 정책 타임라인</a>)`;
+
 // 전세 보기의 시계열: 전세 이동평균·중위값·건수를 매매 자리에 넣어 같은 차트로 그린다 (겹쳐 그릴 전세선은 없음)
 const jeonseView = (s) => s.map((r) => ({ ...r, ma: r.jeonseMa, median: r.jeonse, count: r.jeonseCount, bulk: 0, jeonseMa: null }));
 // 지역 평당가 + 거래량. 토스증권처럼 위의 큰 숫자가 십자선을 따라 바뀐다. L: 주 시리즈 이름('매매'·'전세')
-function priceVolumeChart(s, ind, L = '매매') {
+function priceVolumeChart(s, ind, L = '매매', pols = []) {
   const chart = tvChart(document.getElementById('pv'));
   const last = s.length - 1; // 신고 진행 중인 달: 이동평균은 그리지 않고(지표와 같은 기준) 거래량만 옅게
   const ma = s.map((r, i) => (i < last ? r.ma : null));
+  const pol = policyLayer(s, pols, ma);
   const pt = (r, v) => (v == null ? { time: ymSec(r.ym) } : { time: ymSec(r.ym), value: v });
   const manFmt = { type: 'custom', minMove: 1, formatter: fmtMan };
   const price = chart.addSeries(LWC.AreaSeries, { title: L, lineWidth: 2, priceFormat: manFmt, priceLineStyle: LWC.LineStyle.Dotted, crosshairMarkerRadius: 4, crosshairMarkerBorderColor: css('--surface') });
@@ -695,9 +719,10 @@ function priceVolumeChart(s, ind, L = '매매') {
       state.pv.median && r.median != null ? `${L} 월 중위 ${fmtMan(r.median)}` : '',
       state.pv.jeonse && k < last && r.jeonseMa != null ? `전세 이동평균 ${fmtMan(r.jeonseMa)}` : '',
       `${L} 거래 ${r.count}건${r.bulk ? ` (+일괄 ${r.bulk})` : ''}${k === last ? ' · 신고 진행 중' : ''}`,
+      state.pv.policy ? policyHead(pol.at(r.ym)) : '',
     ]);
   };
-  const onRange = trackRange(chart, s, ma, price, (a1, b1) => { [a, b] = [a1, b1]; showHead(null); }, L, document.getElementById('pvSwatch'));
+  const onRange = trackRange(chart, s, ma, price, (a1, b1) => { [a, b] = [a1, b1]; showHead(null); }, L, document.getElementById('pvSwatch'), () => (state.pv.policy ? pol.markers() : []));
   const byTime = new Map(s.map((r, i) => [ymSec(r.ym), i]));
   chart.subscribeCrosshairMove((p) => showHead(p.time != null ? byTime.get(p.time) ?? null : null));
 
@@ -706,7 +731,8 @@ function priceVolumeChart(s, ind, L = '매매') {
     const k = btn.dataset.s;
     state.pv[k] = !state.pv[k];
     btn.classList.toggle('on', state.pv[k]);
-    series[k].applyOptions({ visible: state.pv[k] });
+    if (k === 'policy') onRange();
+    else series[k].applyOptions({ visible: state.pv[k] });
     showHead(null);
   }));
   bindRange(chart, 'pvRange', last);
@@ -754,7 +780,7 @@ class DotsView {
 // 단지 평형 차트: 실거래 점 / 월봉 전환 (매매·전세 모두), 6개월 이동평균, 아래 칸 월별 매매 건수.
 // 점(월봉 모드에선 그 달)을 누르면 상세 카드가 뜨고, 카드에서 그 거래를 '기준'으로 잡으면 큰 숫자 옆 등락률이 기준 대비로 바뀐다.
 // 전세 보기는 L = '전세'로 부르고 전세 거래를 allTrades(price = 보증금), 전세 이동평균을 sel.series의 ma에 넣어 준다 (겹쳐 그릴 전세는 없음)
-function aptChart(sel, allTrades, allJeonse, L = '매매') {
+function aptChart(sel, allTrades, allJeonse, L = '매매', pols = []) {
   const s = sel.series, last = s.length - 1;
   const o = state.ap;
   const ymOf = (t) => t.date.slice(0, 4) + t.date.slice(5, 7);
@@ -773,6 +799,7 @@ function aptChart(sel, allTrades, allJeonse, L = '매매') {
   chart.applyOptions({ crosshair: { mode: LWC.CrosshairMode.Normal } });
   const eokFmt = { type: 'custom', minMove: 1, formatter: fmtEok };
   const ma = s.map((r, i) => (i < last ? r.ma : null));
+  const pol = policyLayer(s, pols, ma);
   const pt = (r, v) => (v == null ? { time: ymSec(r.ym) } : { time: ymSec(r.ym), value: v });
   const line = chart.addSeries(LWC.AreaSeries, { title: L, lineWidth: 2, priceFormat: eokFmt, priceLineStyle: LWC.LineStyle.Dotted, crosshairMarkerVisible: false });
   line.setData(s.map((r, i) => pt(r, ma[i])));
@@ -845,9 +872,10 @@ function aptChart(sel, allTrades, allJeonse, L = '매매') {
       ts.length ? `${L} ${ts.length}건 ${range(ts)}` : `${L} 없음`,
       js.length ? `전세 ${js.length}건 ${range(js)}` : '',
       i === last ? '신고 진행 중' : '',
+      o.policy ? policyHead(pol.at(r.ym)) : '',
     ]);
   };
-  const onRange = trackRange(chart, s, ma, line, (a1, b1) => { [a, b] = [a1, b1]; showHead(null); }, L, document.getElementById('apSwatch'));
+  const onRange = trackRange(chart, s, ma, line, (a1, b1) => { [a, b] = [a1, b1]; showHead(null); }, L, document.getElementById('apSwatch'), () => (o.policy ? pol.markers() : []));
 
   // 십자선 근처(10px 안)의 점 찾기. 점 위치는 렌더러와 같은 식으로 계산
   const byTime = new Map(s.map((r, i) => [ymSec(r.ym), i]));
@@ -987,6 +1015,7 @@ function aptChart(sel, allTrades, allJeonse, L = '매매') {
     const k = btn.dataset.s;
     o[k] = !o[k];
     btn.classList.toggle('on', o[k]);
+    if (k === 'policy') onRange();
     apply(); showHead(null);
     if (pinned?.dot && !(pinned.dot.kind === L ? shownT : shownJ).includes(pinned.dot)) openCard(null);
     else openCard(pinned);
@@ -1035,16 +1064,19 @@ async function route() {
     const tab = view === 'r' || view === 'a' ? regionOf(parts[1])?.group
       : view === 'watch' ? 'watch'
       : view === 'privacy' ? null
+      : view === 'policy' ? 'policy'
       : view === 'g' && parts[1] ? parts[1] : '서울';
     document.querySelectorAll('#tabs a').forEach((a) => a.classList.toggle('on', a.dataset.tab === tab));
     // 화면 종류만 기록 (기간·테마·매매/전세 보기를 바꿔 다시 그려도 같은 화면으로 센다. 집계는 기기 수 기준)
     const j = isJ() && view !== 'privacy' ? { j: 1 } : undefined;
-    if (!state.keepView && !state.dealSwitch) metrics.track(view === 'r' ? 'view_region' : view === 'a' ? 'view_apt' : view === 'watch' ? 'view_watch' : view === 'privacy' ? 'view_privacy' : 'view_overview', view === 'watch' ? { n: watch.list().length, ...j } : j);
+    // 정책 타임라인은 측정 행동 종류(infra/functions/metrics)에 아직 없어 보내지 않는다
+    if (!state.keepView && !state.dealSwitch && view !== 'policy') metrics.track(view === 'r' ? 'view_region' : view === 'a' ? 'view_apt' : view === 'watch' ? 'view_watch' : view === 'privacy' ? 'view_privacy' : 'view_overview', view === 'watch' ? { n: watch.list().length, ...j } : j);
     state.dealSwitch = false;
     if (view === 'r') await viewRegion(parts[1], id);
     else if (view === 'a') await viewApt(parts[1], parts.slice(2).join('/'), id);
     else if (view === 'watch') await viewWatch(id);
     else if (view === 'privacy') viewPrivacy();
+    else if (view === 'policy') await viewPolicy(parts[1], id);
     else await viewOverview(tab, id);
   } catch (e) {
     if (!isStale(id)) app.innerHTML = `<div class="card err">불러오지 못했습니다: ${esc(e.message)}</div>`;
@@ -1358,6 +1390,8 @@ async function renderFeed(group, id) {
   const dels = items.filter((x) => x.type === 'del');
   const events = items.filter((x) => ['surge', 'regionSurge', 'phase'].includes(x.type));
   const regs = [...codes].map((code) => ({ code, ...c.regions[code] }));
+  const pols = c.items.filter((x) => x.type === 'policy' && x.regions.some((r) => r === 'all' || r === group || codes.has(r)));
+  const polList = pols.length ? `<ul class="changes">${pols.map((x) => `<li><span>새 정책</span> <a href="#/policy">${esc(x.title)}</a> <span class="muted">${esc(x.category)} · ${fullDate(x.announced)} 발표</span></li>`).join('')}</ul>` : '';
   // 빌드·배포가 밀려 마지막 갱신이 오늘(KST)이 아니면 그 날짜로 부른다
   const isToday = c.date === new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
   const day = isToday ? '오늘은' : `${md(c.date)}에는`;
@@ -1383,9 +1417,9 @@ async function renderFeed(group, id) {
   if (!total && !dels.length && !events.length) {
     // 변화가 없으면 마지막으로 새 거래가 확인된 날과 가장 최근 계약일을 보여 준다 (지역 흐름은 아래 요약 문장)
     const lastDay = regs.map((r) => r.lastAdded?.d).filter(Boolean).sort().pop();
-    const lastN = regs.filter((r) => r.lastAdded?.d === lastDay).reduce((n, r) => n + r.lastAdded.n, 0);
+    const lastN = lastDay ? regs.filter((r) => r.lastAdded?.d === lastDay).reduce((n, r) => n + r.lastAdded.n, 0) : 0;
     const lastTrade = regs.map((r) => r.lastTrade).filter(Boolean).sort().pop();
-    el.innerHTML = `<div class="card feed">${head}<p class="muted">${day} ${esc(group)}에서 새로 확인된 거래가 없어요.${lastDay ? ` 마지막으로 새 거래가 확인된 날은 ${md(lastDay)}(${lastN.toLocaleString()}건)이고,` : ''}${lastTrade ? ` 가장 최근 계약일은 ${md(lastTrade)}예요.` : ''}</p>${watchLine}${foot}</div>`;
+    el.innerHTML = `<div class="card feed">${head}<p class="muted">${day} ${esc(group)}에서 새로 확인된 거래가 없어요.${lastDay ? ` 마지막으로 새 거래가 확인된 날은 ${md(lastDay)}(${lastN.toLocaleString()}건)이고,` : ''}${lastTrade ? ` 가장 최근 계약일은 ${md(lastTrade)}예요.` : ''}</p>${polList}${watchLine}${foot}</div>`;
     return;
   }
   const highs = news.filter((x) => x.flags?.includes('high')).length;
@@ -1398,6 +1432,7 @@ async function renderFeed(group, id) {
     <p>${esc(group)}에서 새로 확인된 매매 <b class="num">${total.toLocaleString()}건</b>${highs ? ` · <span class="up">신고가 ${highs}건</span>` : ''}${dels.length ? ` · 삭제 ${dels.length}건` : ''}</p>
     ${top.length ? `<p class="feed-regions">${top.slice(0, 10).map((r) => `<a href="#/r/${r.code}">${esc(regionShort(r.code))} <span class="num">${r.added}</span></a>`).join('')}${top.length > 10 ? `<span class="muted">외 ${top.length - 10}곳</span>` : ''}</p>` : ''}
     ${watchLine}
+    ${polList}
     ${events.length ? `<ul class="changes">${events.map((x) => `<li>${eventLine(x)}</li>`).join('')}</ul>${events.some((x) => x.type !== 'phase') ? `<p class="muted" style="font-size:12px;margin:4px 0 0">급등: ${SURGE_NOTE}</p>` : ''}` : ''}
     ${sorted.length ? `<ul class="changes">${sorted.slice(0, FEED_ROWS).map(row).join('')}</ul>` : ''}
     ${sorted.length > FEED_ROWS || dels.length ? `<details><summary>${sorted.length > FEED_ROWS ? `거래 더 보기` : ''}${sorted.length > FEED_ROWS && dels.length ? ' · ' : ''}${dels.length ? `삭제된 거래 ${dels.length}건` : ''}</summary>
@@ -1869,12 +1904,13 @@ async function viewRegion(code, id) {
   const J = isJ();
   const brokerOnly = !J && getKind() === 'broker'; // 직거래 구분은 매매에만 있다
   showLoading(`<div class="crumb"><a href="#/g/${esc(region.group)}">${esc(region.group)}</a> ›</div><h1>${esc(region.name)}</h1>${skeleton(`실거래 ${months}개월치 불러오는 중… (처음 보는 기간은 국토부 API 호출로 30초 정도 걸릴 수 있어요)`)}`);
-  const [d] = await Promise.all([getRegion(code, months, brokerOnly, J), getForecasts()]);
+  const [d] = await Promise.all([getRegion(code, months, brokerOnly, J), getForecasts(), getPolicies()]);
   if (isStale(id)) return;
   destroyCharts();
   const ind = d.indicators;
   const s = d.series;
   const L = dealName();
+  const pols = policyFor(code);
   app.innerHTML = `
     <div class="crumb"><a href="#/g/${esc(region.group)}">${esc(region.group)}</a> ›</div>
     <div class="row"><h1>${esc(region.name)}</h1>${J ? '' : phaseChip(ind.phase)}<span class="spacer"></span>${J ? '' : kindSeg(brokerOnly)}${monthsSeg(months, opts)}</div>
@@ -1905,10 +1941,11 @@ async function viewRegion(code, id) {
           <span class="chip-static"><i id="pvSwatch"></i>${L} 3개월 이동평균</span>
           <button data-s="median" class="${state.pv.median ? 'on' : ''}" title="눌러서 켜고 끄기"><i class="dot" style="background:${css('--series-1-soft')}"></i>${L} 월 중위값</button>
           ${J ? '' : `<button data-s="jeonse" class="${state.pv.jeonse ? 'on' : ''}" title="눌러서 켜고 끄기"><i style="background:${css('--series-2')}"></i>전세 3개월 이동평균</button>`}
+          ${pols.length ? policyChip(state.pv.policy) : ''}
         </div>
       </div>
       <div class="tv-box" id="pv"></div>
-      <p class="muted tv-note">아래 칸은 월별 ${L} 거래량 (점선 = 장기 평균 ${(J ? ind.jeonse : ind).volLong ?? '–'}건/월)${!J && s.some((r) => r.bulk) ? ' · 노란 막대 = 일괄 거래(지표에서 제외)' : ''} · 휠·핀치로 확대</p>
+      <p class="muted tv-note">아래 칸은 월별 ${L} 거래량 (점선 = 장기 평균 ${(J ? ind.jeonse : ind).volLong ?? '–'}건/월)${!J && s.some((r) => r.bulk) ? ' · 노란 막대 = 일괄 거래(지표에서 제외)' : ''} · 휠·핀치로 확대${pols.length ? policyNote(code) : ''}</p>
     </div>
     <div class="${J ? '' : 'grid2'}">
       ${J ? '' : `<div class="card">
@@ -1931,8 +1968,8 @@ async function viewRegion(code, id) {
   bindMonths(`region.${code}`);
   bindKind();
 
-  if (J) priceVolumeChart(jeonseView(s), ind.jeonse, L);
-  else priceVolumeChart(s, ind);
+  if (J) priceVolumeChart(jeonseView(s), ind.jeonse, L, pols);
+  else priceVolumeChart(s, ind, '매매', pols);
 
   const roll3 = (xs) => xs.map((_, i) => { const w = xs.slice(Math.max(0, i - 2), i + 1).filter((v) => v != null); return w.length === 3 ? w.reduce((a, b) => a + b) / 3 : null; });
   const done = s.slice(0, -1); // 신고 진행 중인 마지막 달 제외
@@ -2052,8 +2089,9 @@ async function viewApt(code, key, id) {
   const months = opts.some(([m]) => m === savedMonths) ? savedMonths : getMonths(monthView, opts, 36);
   showLoading(`<div class="crumb"><a href="#/r/${code}">${esc(region.name)}</a> ›</div>${skeleton('불러오는 중… (처음 보는 기간은 30초 정도 걸릴 수 있어요)')}`);
   const J = isJ();
-  const d = await getApt(code, key, months, J);
+  const [d] = await Promise.all([getApt(code, key, months, J), getPolicies()]);
   if (isStale(id)) return;
+  const pols = policyFor(code);
   destroyCharts();
   const { apt } = d;
   key = apt.key;
@@ -2177,10 +2215,11 @@ async function viewApt(code, key, id) {
             <span class="chip-static"><i class="dot" style="background:${css('--series-1')}"></i><span id="apKind">${state.ap.mode === 'dots' ? '매매 실거래' : '매매 월봉'}</span></span>
             <button data-s="jeonse" class="${state.ap.jeonse ? 'on' : ''}" title="눌러서 켜고 끄기"><i class="dot" style="background:${css('--series-2')}"></i><span id="apJKind">${state.ap.mode === 'dots' ? '전세 실거래·이동평균' : '전세 월봉·이동평균'}</span></button>
             <button data-s="low" class="${state.ap.low ? 'on' : ''}" title="저층(1~3층·지하)은 시세보다 낮게 거래되는 경우가 많아요. 눌러서 켜고 끄기">1~3층 포함</button>
+            ${pols.length ? policyChip(state.ap.policy) : ''}
           </div>
         </div>
         <div class="tv-stage"><div class="tv-box" id="ap"></div><div class="tv-pop" id="apPop" hidden></div></div>
-        <p class="muted tv-note">점이나 월봉을 누르면 상세 정보가 나와요 · <span class="up">빨간 테두리</span> = 신고가${cur.length ? ` · 이번 달 거래 ${cur.length}건은 신고 진행 중이라 차트·시세에 넣지 않았어요 (아래 최근 매매에 표시)` : ''}</p>
+        <p class="muted tv-note">점이나 월봉을 누르면 상세 정보가 나와요 · <span class="up">빨간 테두리</span> = 신고가${cur.length ? ` · 이번 달 거래 ${cur.length}건은 신고 진행 중이라 차트·시세에 넣지 않았어요 (아래 최근 매매에 표시)` : ''}${pols.length ? policyNote(code) : ''}</p>
       </div>
       <div class="grid2">
         <div class="card table-wrap"><h2>최근 매매</h2>${cur.length ? `<p class="muted" style="font-size:12px;margin:0 0 8px">${PARTIAL_HELP}</p>` : ''}<table><thead><tr><th class="l">계약일</th><th>층</th><th>거래가</th><th>평당가</th><th class="l">유형</th></tr></thead><tbody>
@@ -2191,7 +2230,7 @@ async function viewApt(code, key, id) {
         </tbody></table></div>
       </div>`;
 
-    aptChart(sel, trades, jeonse);
+    aptChart(sel, trades, jeonse, '매매', pols);
   }
   // 전세 보기: 이 평형의 전세 시세·차트·최근 전세만. 매매는 전세가율·갭 계산에만 쓴다
   function renderJeonseArea(sel) {
@@ -2230,16 +2269,17 @@ async function viewApt(code, key, id) {
             <span class="chip-static"><i id="apSwatch"></i>전세 6개월 이동평균</span>
             <span class="chip-static"><i class="dot" style="background:${css('--series-2')}"></i><span id="apKind">${state.ap.mode === 'dots' ? '전세 실거래' : '전세 월봉'}</span></span>
             <button data-s="low" class="${state.ap.low ? 'on' : ''}" title="저층(1~3층·지하)은 시세보다 낮게 거래되는 경우가 많아요. 눌러서 켜고 끄기">1~3층 포함</button>
+            ${pols.length ? policyChip(state.ap.policy) : ''}
           </div>
         </div>
         <div class="tv-stage"><div class="tv-box" id="ap"></div><div class="tv-pop" id="apPop" hidden></div></div>
-        <p class="muted tv-note">점이나 월봉을 누르면 상세 정보가 나와요</p>
+        <p class="muted tv-note">점이나 월봉을 누르면 상세 정보가 나와요${pols.length ? policyNote(code) : ''}</p>
       </div>
       <div class="card table-wrap"><h2>최근 전세</h2><table><thead><tr><th class="l">계약일</th><th>층</th><th>보증금</th><th>평당 전세가</th><th class="l">원본 명칭</th></tr></thead><tbody>
         ${jeonse.slice(-40).reverse().map((t) => `<tr><td class="l">${dd(t.date)}</td><td>${t.floor}</td><td>${fmtEok(t.deposit)}</td><td>${fmtMan(t.deposit / (t.area / PYEONG))}</td><td class="l muted">${esc(t.sourceApt || t.apt)}</td></tr>`).join('')}
       </tbody></table></div>`;
     // 전세 거래를 차트의 주 시리즈로: 보증금을 price 자리에, 전세 이동평균을 ma 자리에
-    aptChart({ ...sel, series: sel.series.map((r) => ({ ...r, ma: r.jeonseMa, jeonseMa: null })) }, jeonse.map((t) => ({ ...t, price: t.deposit })), [], '전세');
+    aptChart({ ...sel, series: sel.series.map((r) => ({ ...r, ma: r.jeonseMa, jeonseMa: null })) }, jeonse.map((t) => ({ ...t, price: t.deposit })), [], '전세', pols);
   }
   renderArea();
 }
@@ -2326,6 +2366,62 @@ function viewPrivacy() {
     }
     e.target.disabled = false;
   });
+}
+
+// ---------- 정책 타임라인 (로드맵 9번, 자료 형식은 lib/policies.js) ----------
+// 발표일·시행일과 원문만 보여 준다. 가격 변화의 원인으로 해석하지 않는다
+const POLICY_CATEGORIES = ['대출', '규제지역', '토지거래허가', '세제', '공급'];
+const POLICY_NOTE = '요약은 참고용이에요. 정확한 조건은 원문에서 확인하세요. 발표 뒤의 가격 변화가 정책 때문이라는 뜻은 아니에요.';
+// 이 지역에 해당하는 정책 (lib/policies.js appliesTo와 같은 규칙)
+const policyApplies = (p, code) => p.regions.some((x) => x === 'all' || x === regionOf(code)?.group || x === code);
+const policyFor = (code) => (state.policies?.items || []).filter((p) => policyApplies(p, code));
+// 대상 지역 이름. 지역 코드가 많으면 몇 곳만 적는다
+function policyRegions(p) {
+  const names = p.regions.map((x) => (x === 'all' ? '전국' : regionOf(x) ? regionShort(x) : x));
+  return names.length > 6 ? `${names.slice(0, 5).join('·')} 외 ${names.length - 5}곳` : names.join('·');
+}
+const fullDate = (d) => d.replace(/-/g, '.');
+
+async function viewPolicy(code, id) {
+  const region = code ? requireRegion(code) : null;
+  showLoading(`<h1>정책 타임라인</h1>${skeleton()}`);
+  const data = await getPolicies();
+  if (isStale(id)) return;
+  if (!data) { app.innerHTML = '<div class="card err">정책 자료를 불러오지 못했습니다.</div>'; return; }
+  const all = (region ? policyFor(code) : data.items).slice().sort((a, b) => b.announced.localeCompare(a.announced) || a.id.localeCompare(b.id));
+  const cats = POLICY_CATEGORIES.filter((c) => all.some((p) => p.category === c));
+  app.innerHTML = `
+    ${region ? `<div class="crumb"><a href="#/r/${code}">${esc(region.name)}</a> ›</div>` : ''}
+    <div class="row"><h1>${region ? `${esc(regionShort(code))} 정책 타임라인` : '정책 타임라인'}</h1><span class="spacer"></span>
+      <select id="polRegion" aria-label="지역 고르기"><option value="">전체 지역</option>${state.meta.regions.map((r) => `<option value="${r.code}" ${r.code === code ? 'selected' : ''}>${esc(r.group)} ${esc(r.name)}</option>`).join('')}</select>
+    </div>
+    <p class="lead">주택 대출·규제지역·토지거래허가·세제·공급 정책의 발표일과 원문이에요. ${POLICY_NOTE}</p>
+    <div class="row" style="margin-bottom:12px"><div class="seg" id="polCat"><button data-c="" class="on">전체</button>${cats.map((c) => `<button data-c="${esc(c)}">${esc(c)}</button>`).join('')}</div></div>
+    <div class="card"><ol class="timeline" id="polList"></ol></div>
+    <p class="muted" style="font-size:12px">마지막 수정 ${fullDate(data.updated)} · 지역·단지 차트의 <span class="pol-mark">▼</span>는 발표한 달이에요. 해제·변경된 정책도 지우지 않고 남겨요. 빠졌거나 틀린 내용은 <a href="https://github.com/Thirdsense3/homeTrend/issues" target="_blank" rel="noopener">GitHub 이슈</a>로 알려 주세요.</p>`;
+  const render = (cat) => {
+    const list = all.filter((p) => !cat || p.category === cat);
+    let year = '';
+    document.getElementById('polList').innerHTML = list.map((p) => {
+      const y = p.announced.slice(0, 4), head = y !== year ? `<li class="tl-year">${y}</li>` : '';
+      year = y;
+      return `${head}<li class="tl-item">
+        <div class="tl-date num">${fullDate(p.announced).slice(5)}</div>
+        <div class="tl-body">
+          <div><span class="tag">${esc(p.category)}</span> <b>${esc(p.title)}</b>${p.ended ? ' <span class="tag">종료</span>' : ''}</div>
+          <p class="muted tl-meta">${[`발표 ${fullDate(p.announced)}`, p.effective && `시행 ${fullDate(p.effective)}`, p.ended && `종료 ${fullDate(p.ended)}`, `대상 ${esc(policyRegions(p))}`].filter(Boolean).join(' · ')}</p>
+          <p>${esc(p.summary)}</p>
+          <a href="${esc(p.source)}" target="_blank" rel="noopener">원문 보기</a>
+        </div>
+      </li>`;
+    }).join('') || '<li class="muted">해당하는 정책이 없어요.</li>';
+  };
+  app.querySelectorAll('#polCat button').forEach((btn) => btn.addEventListener('click', () => {
+    app.querySelectorAll('#polCat button').forEach((x) => x.classList.toggle('on', x === btn));
+    render(btn.dataset.c);
+  }));
+  document.getElementById('polRegion').addEventListener('change', (e) => { location.hash = e.target.value ? `#/policy/${e.target.value}` : '#/policy'; });
+  render('');
 }
 
 // ---------- 관심단지 ----------
