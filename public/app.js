@@ -166,21 +166,22 @@ function withPartial(list, partial) {
   return out;
 }
 // partial: 이번 달(신고 진행 중) 거래. 시세·차트·지표에는 쓰지 않고 목록에서만 따로 표시한다
-// jeonseOk: 전세 보기. 매매가 없거나 일괄 거래뿐이어도 전세 거래가 있으면 단지를 보여 준다
+// jeonseOk: 전세 보기. 매매가 없거나 일괄 거래뿐이어도 전세 거래(이번 달 포함)가 있으면 단지를 보여 준다
 async function getApt(code, key, months, jeonseOk) {
   const { yms, trades, partial, rents, partialRents } = await getRaw(code, months);
   key = A.canonicalKey(code, key, state.complexes?.[code]);
   const both = A.markBulk([...trades, ...partial].filter((x) => A.aptKey(x) === key)).sort((a, b) => a.date.localeCompare(b.date));
   const t = both.filter((x) => !x.partial);
   const r = rents.filter((x) => A.aptKey(x) === key).sort((a, b) => a.date.localeCompare(b.date));
-  const jn = r.filter(A.isJeonse).length;
-  if (!(jeonseOk && jn)) {
-    const hint = jn ? ` (전세 ${jn}건은 위에서 '전세'로 바꾸면 볼 수 있어요)` : '';
+  const pr = partialRents.filter((x) => A.aptKey(x) === key).sort((a, b) => a.date.localeCompare(b.date));
+  const jn = r.filter(A.isJeonse).length, pjn = pr.filter(A.isJeonse).length;
+  if (!(jeonseOk && (jn || pjn))) {
+    const hint = jn + pjn ? ` (전세 ${jn + pjn}건은 위에서 '전세'로 바꾸면 볼 수 있어요)` : '';
     if (!t.length && both.length) throw new Error(`이번 달(신고 진행 중) 거래 ${both.length}건만 있는 단지예요. 시세·차트는 신고가 끝나는 다음 달부터 계산해요${hint}`);
     if (!t.length) throw new Error(`해당 기간에 ${jn ? '매매 ' : ''}거래가 없는 단지입니다${hint}`);
     if (t.every((x) => x.bulk)) throw new Error(`해당 기간에 일괄 거래(통매각)만 있어 시세를 계산할 수 없는 단지입니다${hint}`);
   }
-  const last = t[t.length - 1] || r[r.length - 1];
+  const last = t[t.length - 1] || r[r.length - 1] || both[both.length - 1] || pr[pr.length - 1];
   const cur = both.filter((x) => x.partial);
   // 평형 목록: 시세·차트는 지난달까지로 계산하되, 이번 달에만 거래가 있는 평형도 고를 수 있게 뒤에 붙인다 (partialOnly)
   const { areas } = A.apartmentDetail(yms, t, r);
@@ -189,13 +190,17 @@ async function getApt(code, key, months, jeonseOk) {
   for (const area of new Set(cur.map((x) => A.areaKey(x.area)))) {
     if (!areas.some((a) => a.area === area)) areas.push({ area, count: 0, partialCount: curCount(area), partialOnly: true });
   }
+  // 이번 달 전세만 있는 평형도 전세 보기에서 고를 수 있게 붙인다 (jeonseOnly: 매매 보기에서는 뺀다)
+  for (const area of new Set(pr.filter(A.isJeonse).map((x) => A.areaKey(x.area)))) {
+    if (!areas.some((a) => a.area === area)) areas.push({ area, count: 0, partialCount: 0, partialOnly: true, jeonseOnly: true });
+  }
   return {
     apt: { key, name: last.apt, dong: last.dong, jibun: last.jibun, built: last.built },
     areas,
     trades: t,
     partial: cur,
     rents: r,
-    partialRents: partialRents.filter((x) => A.aptKey(x) === key).sort((a, b) => a.date.localeCompare(b.date)),
+    partialRents: pr,
   };
 }
 // 정적 사이트는 빌드한 기간까지만 선택 가능
@@ -2100,12 +2105,15 @@ async function viewApt(code, key, id) {
   const { apt } = d;
   key = apt.key;
   const areaKey = `${code}:${key}`; // 다른 구에 같은 동·단지명이 있을 수 있어 지역 코드까지 포함
-  // 평형별 전세 건수. 전세 보기는 전세가 많은 평형부터 보이고, 이번 달 매매만 있는 평형은 뺀다
+  // 평형별 전세 건수. 전세 보기는 전세가 많은 평형부터 보이고, 이번 달 매매만 있는 평형은 뺀다 (이번 달 전세가 있으면 둔다).
+  // 매매 보기는 이번 달 전세만 있는 평형(jeonseOnly)을 뺀다
   const jCount = new Map();
   d.rents.filter(A.isJeonse).forEach((t) => jCount.set(A.areaKey(t.area), (jCount.get(A.areaKey(t.area)) || 0) + 1));
-  const jCur = new Map(); // 평형별 이번 달(신고 진행 중) 전세 건수. 건수 표시에만 쓰고 평형 순서에는 넣지 않는다
+  const jCur = new Map(); // 평형별 이번 달(신고 진행 중) 전세 건수. 순서는 지난달까지의 건수가 먼저이고, 같으면 이번 달 건수로
   d.partialRents.filter(A.isJeonse).forEach((t) => jCur.set(A.areaKey(t.area), (jCur.get(A.areaKey(t.area)) || 0) + 1));
-  const areas = J ? d.areas.filter((a) => !a.partialOnly).sort((a, b) => (jCount.get(b.area) || 0) - (jCount.get(a.area) || 0)) : d.areas;
+  const areas = J
+    ? d.areas.filter((a) => !a.partialOnly || jCur.get(a.area)).sort((a, b) => (jCount.get(b.area) || 0) - (jCount.get(a.area) || 0) || (jCur.get(b.area) || 0) - (jCur.get(a.area) || 0))
+    : d.areas.filter((a) => !a.jeonseOnly);
   // 이번 방문에서 고른 평형 → 저장한 관심 평형 → 주력 평형(전세 보기는 전세가 가장 많은 평형) 순
   const has = (a) => areas.some((x) => x.area === a);
   let areaSel = [state.aptArea?.[areaKey], watch.get(code, key)?.area].find(has) || areas[0].area;
