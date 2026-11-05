@@ -1,0 +1,49 @@
+# 매주 정책브리핑 보도자료에서 부동산·대출 관련 글을 찾아 "검토할 정책 후보" 이슈를 연다 (scripts/collect-policies.js)
+# data/policies.json은 바꾸지 않는다. 넣을 항목은 사람이 원문을 확인하고 PR로 추가한다
+# 사이트 빌드·배포(deploy.yml)와 분리돼 있어 여기서 실패해도 배포는 영향 없음
+name: Policy candidates
+
+on:
+  schedule:
+    - cron: '0 0 * * 1' # 매주 월요일 09:00 KST
+  workflow_dispatch:
+    inputs:
+      days:
+        description: '며칠 전까지 볼지'
+        default: '14'
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: policy-candidates
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+      LABEL: policy-candidate
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      # 지난 후보 이슈(닫힌 것 포함)에 나온 글은 다시 올리지 않는다. 14일 범위를 매주 보므로 겹치는 1주는 여기서 걸러진다
+      - name: 지난 후보 목록
+        run: |
+          gh label create "$LABEL" --color C5DEF5 --description '정책 자료에 넣을지 검토할 보도자료' 2>/dev/null || true
+          gh issue list --label "$LABEL" --state all --limit 30 --json body --jq '.[].body' > "$RUNNER_TEMP/seen.md"
+
+      - name: 후보 수집
+        run: node scripts/collect-policies.js --days "${{ inputs.days || '14' }}" --seen "$RUNNER_TEMP/seen.md" --out "$RUNNER_TEMP/candidates.md"
+
+      - name: 이슈 열기
+        run: |
+          if [ ! -s "$RUNNER_TEMP/candidates.md" ]; then echo "새 후보 없음"; exit 0; fi
+          gh issue create --label "$LABEL" --title "정책 후보 검토 ($(TZ=Asia/Seoul date +%F))" --body-file "$RUNNER_TEMP/candidates.md"
