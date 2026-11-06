@@ -1,4 +1,4 @@
-# 매주 정책브리핑 보도자료에서 부동산·대출 관련 글을 찾아 "검토할 정책 후보" 이슈를 연다 (scripts/collect-policies.js)
+# 매주 정책브리핑 보도자료와 서울시 보도자료에서 부동산·대출 관련 글을 찾아 "검토할 정책 후보" 이슈를 연다 (scripts/collect-policies.js)
 # data/policies.json은 바꾸지 않는다. 넣을 항목은 사람이 원문을 확인하고 PR로 추가한다
 # 사이트 빌드·배포(deploy.yml)와 분리돼 있어 여기서 실패해도 배포는 영향 없음
 name: Policy candidates
@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
     inputs:
       days:
-        description: '며칠 전까지 볼지'
+        description: '며칠 전까지 볼지 (1~120)'
         default: '14'
 
 permissions:
@@ -34,14 +34,19 @@ jobs:
         with:
           node-version: 24
 
-      # 지난 후보 이슈(닫힌 것 포함)에 나온 글은 다시 올리지 않는다. 14일 범위를 매주 보므로 겹치는 1주는 여기서 걸러진다
+      # 지난 후보 이슈(닫힌 것 포함, 페이지 끝까지)에 나온 원문 주소는 다시 올리지 않는다.
+      # 14일 범위를 매주 보므로 겹치는 1주는 여기서 걸러진다. 조회에 실패하면 중복 이슈를 막기 위해 멈춘다
       - name: 지난 후보 목록
         run: |
           gh label create "$LABEL" --color C5DEF5 --description '정책 자료에 넣을지 검토할 보도자료' 2>/dev/null || true
-          gh issue list --label "$LABEL" --state all --limit 30 --json body --jq '.[].body' > "$RUNNER_TEMP/seen.md"
+          gh api --paginate "repos/$GITHUB_REPOSITORY/issues?labels=$LABEL&state=all&per_page=100" --jq '.[].body // empty' > "$RUNNER_TEMP/seen.md"
+          echo "지난 후보 이슈 본문 $(wc -l < "$RUNNER_TEMP/seen.md")줄"
 
+      # 입력값은 run 명령에 직접 넣지 않고 환경 변수로 넘긴다. 범위 검사(1~120 정수)는 스크립트가 한다
       - name: 후보 수집
-        run: node scripts/collect-policies.js --days "${{ inputs.days || '14' }}" --seen "$RUNNER_TEMP/seen.md" --out "$RUNNER_TEMP/candidates.md"
+        env:
+          DAYS: ${{ inputs.days || '14' }}
+        run: node scripts/collect-policies.js --days "$DAYS" --seen "$RUNNER_TEMP/seen.md" --out "$RUNNER_TEMP/candidates.md"
 
       - name: 이슈 열기
         run: |
