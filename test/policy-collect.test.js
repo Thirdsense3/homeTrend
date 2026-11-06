@@ -139,3 +139,31 @@ test('서울시는 한 페이지가 통째로 기간 이전이 되면 멈추고 
   assert.deepEqual(out.map((x) => x.id), ['5', '4', '2']);
   assert.equal(read, 3);
 });
+
+test('회귀: 서울시 RSS에서 전체 건수가 남았는데 빈 페이지가 나오면 실패한다', async () => {
+  const F = '2026-10-23', T = '2026-11-06';
+  // 항목 구조가 바뀌어 첫 페이지부터 하나도 못 읽음 (리뷰 재현 사례)
+  const changed = pc.parseSeoulRss('<rss><channel><totalCnt>64275</totalCnt><entry><title>토지거래허가구역 지정</title></entry></channel></rss>');
+  assert.deepEqual(changed, { items: [], total: 64275, broken: 0, untitled: 0 });
+  await assert.rejects(pc.crawlSeoul(async () => changed, F, T), /전체 64275건 중 0건만/);
+  // 순회 중간에 빈 페이지 (아직 기간 안)
+  const s = (id, date) => ({ ...it(String(id), '제목', date), key: `seoul:${id}` });
+  const mid = [{ items: [s(2, '2026-11-05'), s(1, '2026-11-01')], total: 100, broken: 0 }, { items: [], total: 100, broken: 0 }];
+  await assert.rejects(pc.crawlSeoul(async (p) => mid[p - 1], F, T), /전체 100건 중 2건만/);
+  // 정상: 전체 0건, 전체 건수만큼 읽음
+  assert.deepEqual(await pc.crawlSeoul(async () => ({ items: [], total: 0, broken: 0 }), F, T), []);
+  const all = [{ items: [s(2, '2026-11-05'), s(1, '2026-11-01')], total: 2, broken: 0 }];
+  assert.equal((await pc.crawlSeoul(async (p) => all[p - 1], F, T)).length, 2);
+});
+
+test('회귀: 서울시 RSS에서 <title> 요소가 없으면 broken, 내용만 비었으면 untitled', () => {
+  const item = (inner) => `<totalCnt>1</totalCnt><item>${inner}<link>https://www.seoul.go.kr/news/news_report.do#view/1</link><pubDate>2026-11-05 05:00:00</pubDate></item>`;
+  assert.deepEqual(pc.parseSeoulRss(item('<headline>토지거래허가구역 지정</headline>')), { items: [], total: 1, broken: 1, untitled: 0 });
+  const empty = pc.parseSeoulRss(item('<title><![CDATA[ (자료제공)  ]]></title>'));
+  assert.equal(empty.broken, 0);
+  assert.equal(empty.untitled, 1);
+  assert.equal(pc.parseSeoulRss(item('<title></title>')).untitled, 1);
+  // 링크·날짜 요소가 없어도 broken
+  assert.equal(pc.parseSeoulRss('<totalCnt>1</totalCnt><item><title>제목</title><pubDate>2026-11-05</pubDate></item>').broken, 1);
+  assert.equal(pc.parseSeoulRss('<totalCnt>1</totalCnt><item><title>제목</title><link>https://www.seoul.go.kr/news/news_report.do#view/1</link></item>').broken, 1);
+});
