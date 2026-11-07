@@ -167,3 +167,13 @@ test('회귀: 서울시 RSS에서 <title> 요소가 없으면 broken, 내용만 
   assert.equal(pc.parseSeoulRss('<totalCnt>1</totalCnt><item><title>제목</title><pubDate>2026-11-05</pubDate></item>').broken, 1);
   assert.equal(pc.parseSeoulRss('<totalCnt>1</totalCnt><item><title>제목</title><link>https://www.seoul.go.kr/news/news_report.do#view/1</link></item>').broken, 1);
 });
+
+test('회귀: 제목 앞머리 표시만 다른 같은 날 글은 하나로 합친다', () => {
+  const t = '현재 유포되고 있는 부동산 대책 관련 게시글의 보도에 유의하여 주시기 바랍니다.';
+  const out = pc.pickCandidates([it('1', t, '2026-11-06', '금융위원회'), it('2', `[참고] ${t}`, '2026-11-06', '국토교통부')]);
+  assert.deepEqual(out.map((c) => [c.title, c.links.map((l) => l.dept)]), [[t, ['금융위원회', '국토교통부']]]);
+  assert.equal(pc.sameTitle('(설명)[보도참고] 주택 공급'), pc.sameTitle('주택 공급'));
+  // 앞머리가 아닌 괄호, 다른 꺾쇠 표기는 그대로 둔다
+  assert.notEqual(pc.sameTitle('<주택 신속공급 방안(8.13) 후속조치> 이주비 지원'), pc.sameTitle('이주비 지원'));
+  assert.notEqual(pc.sameTitle('주택 공급 (2차)'), pc.sameTitle('주택 공급'));
+});
