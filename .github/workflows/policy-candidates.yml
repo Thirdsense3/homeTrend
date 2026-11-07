@@ -1,5 +1,6 @@
-# 매주 정책브리핑 보도자료와 서울시 보도자료에서 부동산·대출 관련 글을 찾아 "검토할 정책 후보" 이슈를 연다 (scripts/collect-policies.js)
-# data/policies.json은 바꾸지 않는다. 넣을 항목은 사람이 원문을 확인하고 PR로 추가한다
+# 매주 두 가지 검토 이슈를 연다. 둘 다 data/policies.json은 바꾸지 않고, 사람이 원문을 확인하고 PR로 반영한다
+#   collect: 정책브리핑·서울시 보도자료에서 부동산·대출 관련 글을 찾아 "정책 후보 검토" 이슈 (scripts/collect-policies.js)
+#   reviews: 정책의 확인 예정일(reviews.by) 45일 전부터 "정책 확인" 이슈 (scripts/policy-reviews.js)
 # 사이트 빌드·배포(deploy.yml)와 분리돼 있어 여기서 실패해도 배포는 영향 없음
 name: Policy candidates
 
@@ -52,3 +53,35 @@ jobs:
         run: |
           if [ ! -s "$RUNNER_TEMP/candidates.md" ]; then echo "새 후보 없음"; exit 0; fi
           gh issue create --label "$LABEL" --title "정책 후보 검토 ($(TZ=Asia/Seoul date +%F))" --body-file "$RUNNER_TEMP/candidates.md"
+
+  # 수집과 독립: 보도자료 사이트가 실패해도 만료 확인 이슈는 열린다
+  reviews:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ github.token }}
+      LABEL: policy-review
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      # 지난 확인 이슈(닫힌 것 포함)의 본문 표시로 같은 이슈를 다시 열지 않는다. 조회에 실패하면 멈춘다
+      - name: 지난 확인 이슈
+        run: |
+          gh label create "$LABEL" --color FBCA04 --description '기한이 다가오는 정책의 연장·해제 확인' 2>/dev/null || true
+          gh api --paginate "repos/$GITHUB_REPOSITORY/issues?labels=$LABEL&state=all&per_page=100" --jq '.[].body // empty' > "$RUNNER_TEMP/seen.md"
+
+      - name: 확인 예정 계산
+        run: node scripts/policy-reviews.js --seen "$RUNNER_TEMP/seen.md" --out "$RUNNER_TEMP/due.json"
+
+      - name: 이슈 열기
+        run: |
+          n=$(jq length "$RUNNER_TEMP/due.json")
+          for i in $(seq 0 $((n - 1))); do
+            jq -r ".[$i].body" "$RUNNER_TEMP/due.json" > "$RUNNER_TEMP/body.md"
+            gh issue create --label "$LABEL" --title "$(jq -r ".[$i].title" "$RUNNER_TEMP/due.json")" --body-file "$RUNNER_TEMP/body.md"
+          done
+          echo "새로 연 확인 이슈 ${n}건"
