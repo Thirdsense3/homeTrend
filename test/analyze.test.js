@@ -36,6 +36,25 @@ test('보합: 변화가 기준(±1.5%, ±15%) 안이면 0', () => {
   assert.strictEqual(an.regionSummary(yms, rows, []).indicators.phase.id, 0);
 });
 
+test('거래량이 평년 수준(±15%)이면 벌집순환 국면을 붙이지 않는다', () => {
+  // 가격은 3개월 +1.5% 넘게 오르고, 거래량은 36개월 중위 대비 +10%
+  const up = yms.flatMap((ym, i) => trades(ym, 5000 * (1 + 0.02 * i), i >= 8 ? 11 : 10));
+  const a = an.regionSummary(yms, up, []).indicators;
+  assert.ok(a.chg3m > 0.015 && a.volVsAvg > 0 && a.volVsAvg < 0.15);
+  assert.strictEqual(a.phase.id, 7);
+  assert.ok(!an.isCycle(a.phase.id));
+  // 가격 하락 + 거래량 평년 수준
+  const down = yms.flatMap((ym, i) => trades(ym, 5000 * (1 - 0.02 * i), 10));
+  assert.strictEqual(an.regionSummary(yms, down, []).indicators.phase.id, 8);
+  // 거래량이 뚜렷이 줄면 그대로 2·4국면
+  const thin = yms.flatMap((ym, i) => trades(ym, 5000 * (1 + 0.02 * i), i >= 8 ? 6 : 10));
+  assert.strictEqual(an.regionSummary(yms, thin, []).indicators.phase.id, 2);
+});
+
+test('국면 설명에 관측하지 않은 말(매물·호가)과 매수 시점 표현을 쓰지 않는다', () => {
+  for (const p of Object.values(an.PHASES)) assert.doesNotMatch(p.note, /매물|호가|매수|시점|주의|리스트업|관망|바닥/);
+});
+
 test('전세가율은 최근 6개월 평당 전세 중위 ÷ 매매 중위', () => {
   const rows = yms.flatMap((ym) => trades(ym, 5000, 5));
   const rents = rows.map((r) => ({ ...r, deposit: Math.round(r.price * 0.6), monthly: 0 }));

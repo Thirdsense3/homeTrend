@@ -314,6 +314,11 @@ body.busy .top::after {
 .region-options { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; padding-top: 12px; min-width: min(65vw, 560px); }
 .region-options label { white-space: nowrap; }
 .candidate-note { margin-bottom: 16px; font-size: 13px; }
+details.cand summary { cursor: pointer; list-style: none; }
+details.cand summary::-webkit-details-marker { display: none; }
+details.cand summary::after { content: ' ▾'; color: var(--muted); font-size: 11px; }
+details.cand[open] summary::after { content: ' ▴'; }
+details.cand small { display: block; color: var(--muted); font-size: 11px; white-space: nowrap; }
 summary { cursor: pointer; }
 @media (max-width: 700px) { #regionJump { max-width: 130px; } .region-options { min-width: 65vw; } }
 #areas { flex-wrap: wrap; }
@@ -329,7 +334,7 @@ summary { cursor: pointer; }
 .btn:hover { background: var(--accent-wash); }
 .btn:disabled { opacity: 0.5; cursor: default; }
 
-/* 변화 목록: 첫 화면 '오늘 들어온 거래'와 관심단지 카드 */
+/* 변화 목록: 첫 화면 '오늘 새로 확인한 거래'와 관심단지 카드 */
 .feed p { margin: 8px 0 0; }
 ul.changes { list-style: none; margin: 8px 0 0; padding: 0; font-size: 13px; }
 ul.changes li { padding: 3px 0; border-top: 1px solid var(--border); overflow-wrap: anywhere; }

@@ -208,22 +208,37 @@ test('지역: 국면 변화, 급등은 조건이 새로 충족될 때만', () =>
   const go = (prev, i, extra = {}) => ch.regionChanges({ code: '11110', prev, ind: i, weekly: null, complete: true, no: 301, today: TODAY, ...extra });
   assert.deepEqual(go(null, ind(1)).items, []);
   // 같은 기준월 안에서 국면이 바뀌면 값만 갱신하고 변화로 내지 않는다 (경계값 근처 깜빡임)
-  const same = go({ phase: 2, phaseYm: '202609', surge: false }, ind(1));
+  const same = go({ phase: 2, phaseYm: '202609', phaseV: 2, surge: false }, ind(1));
   assert.deepEqual(same.items, []);
-  assert.deepEqual(same.state, { phase: 1, phaseYm: '202609', surge: false });
+  assert.deepEqual(same.state, { phase: 1, phaseYm: '202609', phaseV: 2, surge: false });
   // 기준월이 바뀌면 지난 기준월의 마지막 국면과 비교
-  const p = go({ phase: 2, phaseYm: '202608', surge: false }, ind(1, 0.035));
+  const p = go({ phase: 2, phaseYm: '202608', phaseV: 2, surge: false }, ind(1, 0.035));
   assert.deepEqual(p.items.map((x) => x.type), ['phase', 'regionSurge']);
-  assert.deepEqual(p.state, { phase: 1, phaseYm: '202609', surge: true });
+  assert.deepEqual(p.state, { phase: 1, phaseYm: '202609', phaseV: 2, surge: true });
   assert.deepEqual(go(p.state, ind(1, 0.04)).items, []); // 계속 충족 중
   // 수집 실패: 판정하지 않고 상태 유지
-  assert.deepEqual(go({ phase: 2, phaseYm: '202608', surge: false }, ind(1, 0.05), { complete: false }), { items: [], state: { phase: 2, phaseYm: '202608', surge: false } });
+  assert.deepEqual(go({ phase: 2, phaseYm: '202608', phaseV: 2, surge: false }, ind(1, 0.05), { complete: false }), { items: [], state: { phase: 2, phaseYm: '202608', phaseV: 2, surge: false } });
   // 주간지수 2주 연속 +0.3%
   const weekly = { dates: ['a', 'b', 'c'], sale: [100, 100.31, 100.62] };
   assert.equal(go({ phase: 1, surge: false }, ind(1), { weekly }).items[0].type, 'regionSurge');
   // 30일 안에 같은 지역 급등이 있었으면 다시 충족돼도 보내지 않는다
   const recent = [{ type: 'regionSurge', code: '11110', d: '2026-10-01' }];
   assert.deepEqual(go({ phase: 1, surge: false }, ind(1), { weekly, recent }).items, []);
+});
+
+test('지역: 국면 분류가 바뀐 뒤 첫 판정은 국면 변화로 내지 않는다', () => {
+  const ind = (id, currentYm) => ({ phase: { id }, chg3m: 0, currentYm });
+  const go = (prev, i) => ch.regionChanges({ code: '11110', prev, ind: i, weekly: null, complete: true, no: 301, today: TODAY });
+  assert.equal(ch.PHASE_V, 2);
+  // 예전 분류(phaseV 없음)의 2국면 → 새 분류의 7번(가격↑ 거래량 평년): 기준월이 바뀌어도 값만 갱신
+  const first = go({ phase: 2, phaseYm: '202608', surge: false }, ind(7, '202609'));
+  assert.deepEqual(first.items, []);
+  assert.deepEqual(first.state, { phase: 7, phaseYm: '202609', phaseV: 2, surge: false });
+  // 그다음 기준월부터는 새 분류끼리 비교
+  assert.deepEqual(go(first.state, ind(1, '202610')).items.map((x) => [x.type, x.from, x.to]), [['phase', 7, 1]]);
+  // 수집 실패로 판정하지 못하면 예전 분류 표시를 그대로 둔다
+  assert.deepEqual(ch.regionChanges({ code: '11110', prev: { phase: 2, phaseYm: '202608', surge: false }, ind: ind(7, '202609'), weekly: null, complete: false, no: 301, today: TODAY }).state,
+    { phase: 2, phaseYm: '202608', phaseV: null, surge: false });
 });
 
 test('피드: 같은 날 여러 빌드는 모으고, 날짜가 바뀌면 새로 시작', () => {
