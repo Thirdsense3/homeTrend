@@ -132,8 +132,8 @@ test('원본 명칭 거래가 모두 사라져도 삭제 항목은 대표 단지
 
 // ---------- 변화 ----------
 const TODAY = '2026-10-18';
-// 직전 6개월에 10억 안팎 거래 n건
-const history = (n = 4, price = 100000) => Array.from({ length: n }, (_, i) => ({ ...t(`2026-0${4 + i}-10`, price + i * 100), firstSeen: 0 }));
+// 직전 6개월에 10억 안팎 거래 n건 (기준 거래는 5건 이상이어야 판정한다)
+const history = (n = 5, price = 100000) => Array.from({ length: n }, (_, i) => ({ ...t(`2026-0${4 + i}-10`, price + i * 100), firstSeen: 0 }));
 const changes = (trades, added, extra = {}) => ch.tradeChanges({ code: '11110', trades, added, removed: [], no: 301, today: TODAY, complete: true, ...extra });
 
 test('신고가: 이전에 확인된 같은 평형 최고가를 넘은 새 거래', () => {
@@ -155,7 +155,7 @@ test('급등: 중위값 +10% 거래가 60일 안에 2건이면 급등, 1건이�
   const items = changes([...old, a, b], [b]);
   assert.ok(items[0].flags.includes('surge'));
   assert.equal(items[0].basis.count, 2);
-  assert.equal(items[0].basis.n, 5); // 앞선 높은 거래도 직전 6개월 기준에 들어간다
+  assert.equal(items[0].basis.n, 6); // 앞선 높은 거래도 직전 6개월 기준에 들어간다
   const event = items.find((x) => x.type === 'surge');
   assert.ok(event && event.basis.rise >= 0.1);
   // 1건뿐이고 직전 6개월 최고가(10억 8천)를 5% 넘지 않으면 높은 가격 거래
@@ -163,35 +163,40 @@ test('급등: 중위값 +10% 거래가 60일 안에 2건이면 급등, 1건이�
   const single = changes([...old, peak, b], [b]);
   assert.ok(single[0].flags.includes('highPrice'));
   assert.ok(!single.some((x) => x.type === 'surge'));
-  // 1건이어도 최고가를 5% 넘으면 급등
+  // 1건이면 직전 최고가를 크게 넘어도 높은 가격 거래 (2026-11 1차 점검에서 바꿈)
   const big = { ...t('2026-10-05', 120000), firstSeen: 301 };
-  assert.ok(changes([...old, big], [big])[0].flags.includes('surge'));
+  const one = changes([...old, big], [big]);
+  assert.ok(one[0].flags.includes('highPrice') && !one[0].flags.includes('surge'));
+  assert.ok(!one.some((x) => x.type === 'surge'));
 });
 
 test('급등 판정 제외: 기준 거래 부족, 직거래·저층, 수집 실패, 60일보다 오래된 계약', () => {
   const big = (extra) => ({ ...t('2026-10-05', 130000, extra), firstSeen: 301 });
   const x = big();
-  assert.equal(changes([...history(2), x], [x])[0].flags?.includes('surge') ?? false, false);
+  // 기준 거래가 5건 미만이면 2건이 높아도 판정하지 않는다
+  const x0 = { ...t('2026-09-25', 130000), firstSeen: 201 };
+  assert.equal(changes([...history(3), x0, x], [x])[0].flags, undefined);
   for (const y of [big({ kind: '직거래' }), big({ floor: 2 })]) {
     assert.ok(!(changes([...history(), y], [y])[0].flags || []).some((f) => f === 'surge' || f === 'highPrice'));
   }
   // 직거래·저층 고가 거래는 기준값에도 들어가지 않는다
   const low = Array.from({ length: 3 }, (_, i) => ({ ...t(`2026-0${5 + i}-01`, 150000, { floor: 1 }), firstSeen: 0 }));
-  assert.equal(changes([...history(), ...low, x], [x])[0].basis.n, 4);
+  assert.equal(changes([...history(), ...low, x], [x])[0].basis.n, 5);
   assert.equal(changes([...history(), x], [x], { complete: false })[0].flags, undefined);
   const late = { ...t('2026-07-30', 130000), firstSeen: 301 };
-  assert.ok(!(changes([...history(), late], [late])[0].flags || []).includes('surge'));
+  assert.ok(!(changes([...history(), late], [late])[0].flags || []).some((f) => f === 'surge' || f === 'highPrice'));
   // 60일 안이면 늦게 신고된 거래도 판정한다
   const lateOk = { ...t('2026-08-25', 130000), firstSeen: 301 };
-  assert.ok(changes([...history(), lateOk], [lateOk])[0].flags.includes('surge'));
+  assert.ok(changes([...history(), lateOk], [lateOk])[0].flags.includes('highPrice'));
 });
 
 test('같은 단지·평형 급등은 30일에 한 번만', () => {
+  const x0 = { ...t('2026-09-25', 130000), firstSeen: 201 };
   const x = { ...t('2026-10-05', 130000), firstSeen: 301 };
   const recent = [{ type: 'surge', code: '11110', key: '동|A', area: 84.97, d: '2026-10-01' }];
-  assert.ok(!changes([...history(), x], [x], { recent }).some((i) => i.type === 'surge'));
+  assert.ok(!changes([...history(), x0, x], [x], { recent }).some((i) => i.type === 'surge'));
   const old = [{ ...recent[0], d: '2026-09-10' }];
-  assert.ok(changes([...history(), x], [x], { recent: old }).some((i) => i.type === 'surge'));
+  assert.ok(changes([...history(), x0, x], [x], { recent: old }).some((i) => i.type === 'surge'));
 });
 
 test('삭제된 거래와 변화 id는 같은 입력이면 같다', () => {
@@ -208,22 +213,37 @@ test('지역: 국면 변화, 급등은 조건이 새로 충족될 때만', () =>
   const go = (prev, i, extra = {}) => ch.regionChanges({ code: '11110', prev, ind: i, weekly: null, complete: true, no: 301, today: TODAY, ...extra });
   assert.deepEqual(go(null, ind(1)).items, []);
   // 같은 기준월 안에서 국면이 바뀌면 값만 갱신하고 변화로 내지 않는다 (경계값 근처 깜빡임)
-  const same = go({ phase: 2, phaseYm: '202609', surge: false }, ind(1));
+  const same = go({ phase: 2, phaseYm: '202609', phaseV: 2, surge: false }, ind(1));
   assert.deepEqual(same.items, []);
-  assert.deepEqual(same.state, { phase: 1, phaseYm: '202609', surge: false });
+  assert.deepEqual(same.state, { phase: 1, phaseYm: '202609', phaseV: 2, surge: false });
   // 기준월이 바뀌면 지난 기준월의 마지막 국면과 비교
-  const p = go({ phase: 2, phaseYm: '202608', surge: false }, ind(1, 0.035));
+  const p = go({ phase: 2, phaseYm: '202608', phaseV: 2, surge: false }, ind(1, 0.035));
   assert.deepEqual(p.items.map((x) => x.type), ['phase', 'regionSurge']);
-  assert.deepEqual(p.state, { phase: 1, phaseYm: '202609', surge: true });
+  assert.deepEqual(p.state, { phase: 1, phaseYm: '202609', phaseV: 2, surge: true });
   assert.deepEqual(go(p.state, ind(1, 0.04)).items, []); // 계속 충족 중
   // 수집 실패: 판정하지 않고 상태 유지
-  assert.deepEqual(go({ phase: 2, phaseYm: '202608', surge: false }, ind(1, 0.05), { complete: false }), { items: [], state: { phase: 2, phaseYm: '202608', surge: false } });
+  assert.deepEqual(go({ phase: 2, phaseYm: '202608', phaseV: 2, surge: false }, ind(1, 0.05), { complete: false }), { items: [], state: { phase: 2, phaseYm: '202608', phaseV: 2, surge: false } });
   // 주간지수 2주 연속 +0.3%
   const weekly = { dates: ['a', 'b', 'c'], sale: [100, 100.31, 100.62] };
   assert.equal(go({ phase: 1, surge: false }, ind(1), { weekly }).items[0].type, 'regionSurge');
   // 30일 안에 같은 지역 급등이 있었으면 다시 충족돼도 보내지 않는다
   const recent = [{ type: 'regionSurge', code: '11110', d: '2026-10-01' }];
   assert.deepEqual(go({ phase: 1, surge: false }, ind(1), { weekly, recent }).items, []);
+});
+
+test('지역: 국면 분류가 바뀐 뒤 첫 판정은 국면 변화로 내지 않는다', () => {
+  const ind = (id, currentYm) => ({ phase: { id }, chg3m: 0, currentYm });
+  const go = (prev, i) => ch.regionChanges({ code: '11110', prev, ind: i, weekly: null, complete: true, no: 301, today: TODAY });
+  assert.equal(ch.PHASE_V, 2);
+  // 예전 분류(phaseV 없음)의 2국면 → 새 분류의 7번(가격↑ 거래량 평년): 기준월이 바뀌어도 값만 갱신
+  const first = go({ phase: 2, phaseYm: '202608', surge: false }, ind(7, '202609'));
+  assert.deepEqual(first.items, []);
+  assert.deepEqual(first.state, { phase: 7, phaseYm: '202609', phaseV: 2, surge: false });
+  // 그다음 기준월부터는 새 분류끼리 비교
+  assert.deepEqual(go(first.state, ind(1, '202610')).items.map((x) => [x.type, x.from, x.to]), [['phase', 7, 1]]);
+  // 수집 실패로 판정하지 못하면 예전 분류 표시를 그대로 둔다
+  assert.deepEqual(ch.regionChanges({ code: '11110', prev: { phase: 2, phaseYm: '202608', surge: false }, ind: ind(7, '202609'), weekly: null, complete: false, no: 301, today: TODAY }).state,
+    { phase: 2, phaseYm: '202608', phaseV: null, surge: false });
 });
 
 test('피드: 같은 날 여러 빌드는 모으고, 날짜가 바뀌면 새로 시작', () => {
