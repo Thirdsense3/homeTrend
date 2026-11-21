@@ -209,6 +209,19 @@ const monthOpts = (opts) => (STATIC ? opts.filter(([m]) => m <= state.meta.month
 const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const PYEONG = 3.305785;
+// 면적 표시 단위: ㎡(기본) 또는 평. 상단에서 고르고 이 브라우저에 기억한다 (initUnit)
+// 평은 두 가지를 함께 적는다: 전용면적을 그대로 바꾼 '전용 N평'과, 흔히 부르는 공급면적 기준 '약 N평형'.
+// 실거래 자료에는 전용면적만 있어 평형은 전용률 75%(공급 = 전용 × 4/3)로 어림한다. 단지마다 공용면적이 달라 1~2평 틀릴 수 있다
+const isPy = () => state.unit === 'py';
+const pyOf = (a) => Number(a) / PYEONG;
+const pyType = (a) => Math.round((Number(a) * 4) / 3 / PYEONG);
+// short: 버튼·표처럼 좁은 곳 ('25.7평·34평형')
+function fmtArea(a, short = false) {
+  if (a == null || a === '' || !(Number(a) > 0)) return '–';
+  if (!isPy()) return `${a}㎡`;
+  return short ? `${pyOf(a).toFixed(1)}평·${pyType(a)}평형` : `전용 ${pyOf(a).toFixed(1)}평 · 약 ${pyType(a)}평형`;
+}
+const AREA_NOTE = '평형은 전용면적에서 어림한 값이에요 (전용률 75% 가정, 단지마다 1~2평 다를 수 있어요)';
 
 function fmtEok(v) { // 만원 → "12억 3,000"
   if (v == null) return '–';
@@ -931,7 +944,7 @@ function aptChart(sel, allTrades, allJeonse, L = '매매', pols = []) {
     return `<div class="pop-head"><span class="pop-kind"><i class="dot" style="background:${css(dot.kind === '매매' ? '--series-1' : '--series-2')}"></i>${dot.kind}</span><span class="muted">${t.date.replace(/-/g, '.')}</span><button type="button" class="pop-x" aria-label="닫기">×</button></div>
       <div class="pop-value num">${fmtEok(dot.y)}${dot.high ? ' <span class="tag high">신고가</span>' : ''}</div>
       <dl class="pop-rows num">
-        ${row('층 · 전용', `${t.floor}층 · ${t.area}㎡`)}
+        ${row('층 · 전용', `${t.floor}층 · ${fmtArea(t.area)}`)}
         ${dot.kind === L ? row('평당가', fmtMan(dot.y / (t.area / PYEONG))) : ''}
         ${dot.kind === L && t.kind ? row('거래 유형', esc(t.kind)) : ''}
         ${dot.kind === L && m ? row('6개월 이동평균 대비', delta(dot.y / m - 1)) : ''}
@@ -1295,7 +1308,7 @@ function initRegionJump() {
 const OV_COLS = [
   ['name', '지역', (r) => r.name, (r) => `<button class="star ${r.liked ? 'on' : ''}" data-like-region="${r.code}" aria-label="${esc(r.name)} 좋아요" aria-pressed="${!!r.liked}">♥</button> <a href="#/r/${r.code}">${esc(r.name)}</a>`],
   ['current', '평당가 (3개월 평균)', (r) => r.ind?.current, (r) => fmtMan(r.ind?.current)],
-  ['eq84', '84㎡ 환산', (r) => r.ind?.current, (r) => (r.ind?.current ? fmtEok(Math.round(r.ind.current * 84 / PYEONG / 100) * 100) : '–')],
+  ['eq84', '84㎡(34평형) 환산', (r) => r.ind?.current, (r) => (r.ind?.current ? fmtEok(Math.round(r.ind.current * 84 / PYEONG / 100) * 100) : '–')],
   ['chg3m', '3개월', (r) => r.ind?.chg3m, (r) => delta(r.ind?.chg3m)],
   ['chg12m', '12개월', (r) => r.ind?.chg12m, (r) => delta(r.ind?.chg12m)],
   ['fromPeak', '5년 고점 대비', (r) => r.ind?.fromPeak, (r) => (r.ind ? `${delta(r.ind.fromPeak)} <span class="muted">${fmtYm(r.ind.peakYm)}</span>` : '–')],
@@ -1316,7 +1329,7 @@ const jInd = (r) => r.ind?.jeonse;
 const OV_J_COLS = [
   OV_COLS[0],
   ['current', '평당 전세가 (3개월 평균)', (r) => jInd(r)?.current, (r) => (r.error ? `<span class="err" title="${esc(r.error)}">오류</span>` : r.ind ? fmtMan(jInd(r)?.current) : '<span class="muted">불러오는 중…</span>')],
-  ['eq84', '84㎡ 환산', (r) => jInd(r)?.current, (r) => (jInd(r)?.current ? fmtEok(Math.round(jInd(r).current * 84 / PYEONG / 100) * 100) : '–')],
+  ['eq84', '84㎡(34평형) 환산', (r) => jInd(r)?.current, (r) => (jInd(r)?.current ? fmtEok(Math.round(jInd(r).current * 84 / PYEONG / 100) * 100) : '–')],
   ['chg3m', '3개월', (r) => jInd(r)?.chg3m, (r) => delta(jInd(r)?.chg3m)],
   ['chg12m', '12개월', (r) => jInd(r)?.chg12m, (r) => delta(jInd(r)?.chg12m)],
   ['fromPeak', '5년 고점 대비', (r) => jInd(r)?.fromPeak, (r) => (jInd(r) ? `${delta(jInd(r).fromPeak)} <span class="muted">${fmtYm(jInd(r).peakYm)}</span>` : '–')],
@@ -1388,7 +1401,7 @@ const regionShort = (code) => (regionOf(code)?.name || code).replace(/ \(.+\)/, 
 const phaseLabel = (id) => (A.PHASES[id] ? phaseTitle({ id, ...A.PHASES[id] }) : '');
 function eventLine(x) {
   const region = `<a href="#/r/${x.code}">${esc(regionShort(x.code))}</a>`;
-  if (x.type === 'surge') return `<span class="up">${surgeName(x.basis)}</span> ${region} ${aptLink(x)} ${x.area}㎡ — ${fmtEok(x.price)} (${fmtDate(x.date)}) · ${surgeBasis(x.basis)}`;
+  if (x.type === 'surge') return `<span class="up">${surgeName(x.basis)}</span> ${region} ${aptLink(x)} ${fmtArea(x.area)} — ${fmtEok(x.price)} (${fmtDate(x.date)}) · ${surgeBasis(x.basis)}`;
   if (x.type === 'regionSurge') {
     const b = x.basis, why = [b.weekly && `주간 매매지수 2주 연속 ${b.weekly.map((c) => delta(c, 2)).join('·')} (${md(b.week)} 기준)`, b.chg3m != null && `3개월 평당가 ${delta(b.chg3m)} (${fmtYm(b.ym)} 완성월까지)`].filter(Boolean);
     return `<span class="up">지역 급등</span> ${region} — ${why.join(', ')}`;
@@ -1817,7 +1830,7 @@ const APT_COLS = [
   ['dong', '동', (r) => r.dong, (r) => esc(r.dong)],
   ['built', '준공', (r) => r.built, (r) => r.built || '–'],
   ['count12m', '최근 1년 거래', (r) => r.count12m, (r) => `${r.count12m}건${r.partialCount ? ` <span class="muted" title="${PARTIAL_HELP}">(이번 달 ${r.partialCount}건 포함)</span>` : ''}`],
-  ['mainArea', '주력 평형', (r) => r.mainArea, (r) => (r.mainArea ? `${r.mainArea}㎡` : '–')],
+  ['mainArea', '주력 평형', (r) => r.mainArea, (r) => (r.mainArea ? fmtArea(r.mainArea, true) : '–')],
   ['ppy', '평당가', (r) => r.ppy, (r) => fmtMan(r.ppy)],
   ['recentPrice', '최근 시세', (r) => r.recentPrice, (r) => fmtEok(r.recentPrice)],
   ['peakPrice', '기간 내 최고가', (r) => r.peakPrice, (r) => (r.peakPrice ? `${fmtEok(r.peakPrice)} <span class="muted">${r.peakDate.slice(2, 7).replace('-', '.')}</span>` : '–')],
@@ -1881,6 +1894,27 @@ function initDeal() {
     route();
   });
 }
+// 면적 단위: ㎡ / 평. 바꾸면 지금 화면을 다시 그린다 (측정 이벤트는 보내지 않는다: 서버의 행동 종류 허용 목록에 없음)
+function initUnit() {
+  try { state.unit = localStorage.getItem('homeTrend.unit') === 'py' ? 'py' : 'm2'; } catch (_) { state.unit = 'm2'; }
+  const seg = document.getElementById('unit');
+  const paint = () => seg.querySelectorAll('button').forEach((b) => {
+    b.classList.toggle('on', b.dataset.u === state.unit);
+    b.setAttribute('aria-pressed', String(b.dataset.u === state.unit));
+    b.title = b.dataset.u === 'py' ? `면적을 평으로 보기. ${AREA_NOTE}` : '면적을 ㎡(전용면적)로 보기';
+  });
+  paint();
+  seg.addEventListener('click', (e) => {
+    const b = e.target.closest('button[data-u]');
+    if (!b || b.dataset.u === state.unit) return;
+    state.unit = b.dataset.u;
+    try { localStorage.setItem('homeTrend.unit', state.unit); } catch (_) { /* 저장 불가: 이번 방문에만 */ }
+    paint();
+    if (!state.meta) return;
+    state.dealSwitch = true; // 같은 화면을 다시 그리는 것이라 화면 조회로 세지 않는다
+    route();
+  });
+}
 // 거래 유형: 전체 / 중개거래만 (직거래 제외). 화면을 옮겨도 유지
 function getKind() { try { return sessionStorage.getItem('homeTrend.kind') || 'all'; } catch (_) { return 'all'; } }
 function kindSeg(brokerOnly) {
@@ -1916,7 +1950,7 @@ function regionJeonseTop(region, ind) {
   return `<p class="lead">${lead} ${tip('평당 전세가 = 전용면적 기준 전세 보증금 ÷ 평 (중위값). 이동평균은 거래된 단지 구성이 달라 생기는 착시를 보정한 값이고, 최근 지표는 신고가 끝난 달까지로 계산해요. 월세·반전세와 같은 날 한 단지에 몰린 일괄 계약은 빼요.')}</p>
     <p class="muted">${SALE_ONLY_NOTE}</p>
     <div class="kpis">
-      <div class="kpi"><div class="label">평당 전세가</div><div class="value num">${fmtMan(j.current)}</div><div class="hint">${fmtYm(j.currentYm)} 기준 · 84㎡ 환산 ${j.current ? fmtEok(Math.round(j.current * 84 / PYEONG / 100) * 100) : '–'}</div></div>
+      <div class="kpi"><div class="label">평당 전세가</div><div class="value num">${fmtMan(j.current)}</div><div class="hint">${fmtYm(j.currentYm)} 기준 · ${isPy() ? '34평형(84㎡)' : '84㎡'} 환산 ${j.current ? fmtEok(Math.round(j.current * 84 / PYEONG / 100) * 100) : '–'}</div></div>
       <div class="kpi"><div class="label">3개월 변화</div><div class="value num">${delta(j.chg3m)}</div><div class="hint">12개월 ${delta(j.chg12m)}</div></div>
       <div class="kpi"><div class="label">기간 내 고점 대비</div><div class="value num">${delta(j.fromPeak)}</div><div class="hint">고점 ${fmtYm(j.peakYm)} · ${fmtMan(j.peak)}</div></div>
       <div class="kpi"><div class="label">고점 이후 저점 대비</div><div class="value num">${delta(j.fromLow)}</div><div class="hint">${j.lowYm ? `저점 ${fmtYm(j.lowYm)} · ${fmtMan(j.low)}` : '현재가 고점'}</div></div>
@@ -1944,7 +1978,7 @@ async function viewRegion(code, id) {
     <div class="row"><h1>${esc(region.name)}</h1>${J ? '' : phaseChip(ind.phase)}<span class="spacer"></span>${J ? '' : kindSeg(brokerOnly)}${monthsSeg(months, opts)}</div>
     ${J ? regionJeonseTop(region, ind) : `<p class="lead">${regionLead(region.name.replace(/ \(.+\)/, ''), ind)} ${tip('평당가 = 전용면적 기준 거래가 ÷ 평 (중위값). 이동평균은 거래된 단지 구성이 달라 생기는 착시를 보정한 값이고, 최근 지표는 신고가 끝난 달까지로 계산해요. 통매각 같은 일괄 거래는 빼고 계산해요.')}</p>
     <div class="kpis">
-      <div class="kpi"><div class="label">평당 매매가</div><div class="value num">${fmtMan(ind.current)}</div><div class="hint">${fmtYm(ind.currentYm)} 기준 · 84㎡ 환산 ${ind.current ? fmtEok(Math.round(ind.current * 84 / PYEONG / 100) * 100) : '–'}</div></div>
+      <div class="kpi"><div class="label">평당 매매가</div><div class="value num">${fmtMan(ind.current)}</div><div class="hint">${fmtYm(ind.currentYm)} 기준 · ${isPy() ? '34평형(84㎡)' : '84㎡'} 환산 ${ind.current ? fmtEok(Math.round(ind.current * 84 / PYEONG / 100) * 100) : '–'}</div></div>
       <div class="kpi"><div class="label">3개월 변화</div><div class="value num">${delta(ind.chg3m)}</div><div class="hint">12개월 ${delta(ind.chg12m)}</div></div>
       <div class="kpi"><div class="label">기간 내 고점 대비</div><div class="value num">${delta(ind.fromPeak)}</div><div class="hint">고점 ${fmtYm(ind.peakYm)} · ${fmtMan(ind.peak)}</div></div>
       <div class="kpi"><div class="label">고점 이후 저점 대비</div><div class="value num">${delta(ind.fromLow)}</div><div class="hint">${ind.lowYm ? `저점 ${fmtYm(ind.lowYm)} · ${fmtMan(ind.low)}` : '현재가 고점'}</div></div>
@@ -2157,7 +2191,7 @@ async function viewApt(code, key, id) {
       <a href="https://rt.molit.go.kr/" target="_blank" rel="noopener" class="copy-name" title="단지명이 복사돼요. 검색창에 붙여넣으세요">국토부 실거래가</a>
       <span class="muted" id="copied" style="font-size:12px"></span>
     </p>
-    <div class="row" style="margin-bottom:16px"><span class="muted">전용면적</span><div class="seg" id="areas">${areas.map((a) => `<button data-a="${a.area}" class="${a.area === areaSel ? 'on' : ''}">${a.area}㎡ <span class="muted">(${J ? `전세 ${jCount.get(a.area) || 0}건${jCur.get(a.area) ? ` · 이번 달 ${jCur.get(a.area)}건` : ''}` : a.partialOnly ? `이번 달 ${a.partialCount}건 · 신고 진행 중` : `매매 ${a.count}건${a.partialCount ? ` · 이번 달 ${a.partialCount}건` : ''}`})</span></button>`).join('')}</div></div>
+    <div class="row" style="margin-bottom:16px"><span class="muted">전용면적</span><div class="seg" id="areas">${areas.map((a) => `<button data-a="${a.area}" class="${a.area === areaSel ? 'on' : ''}">${fmtArea(a.area, true)} <span class="muted">(${J ? `전세 ${jCount.get(a.area) || 0}건${jCur.get(a.area) ? ` · 이번 달 ${jCur.get(a.area)}건` : ''}` : a.partialOnly ? `이번 달 ${a.partialCount}건 · 신고 진행 중` : `매매 ${a.count}건${a.partialCount ? ` · 이번 달 ${a.partialCount}건` : ''}`})</span></button>`).join('')}</div>${isPy() ? ` ${tip(AREA_NOTE)}` : ''}</div>
     <p class="watch-note" id="watchNote"></p>
     <p class="muted">조회 기간에 매매 또는 전세 거래가 있는 전용면적이에요. 거래가 없던 면적은 고를 수 없고, 조회 기간을 늘리면 더 오래전에 거래된 면적도 보여요. 원본 면적을 소수 둘째 자리까지 구분합니다.${!J && d.areas.some((a) => a.partialCount) ? ' 매매 건수는 지난달까지이고, 이번 달(신고 진행 중) 거래는 따로 셉니다.' : ''}${J && jCur.size ? ' 전세 건수는 지난달까지이고, 이번 달(신고 진행 중) 전세는 따로 셉니다.' : ''}${A.apartmentNames(code, apt.dong, apt.name, apt.jibun).length > 1 ? ` 원본 명칭: ${esc(A.apartmentNames(code, apt.dong, apt.name, apt.jibun).filter((n) => n !== apt.name).join(', '))}` : ''}</p><div id="areaView"></div>`;
   bindMonths(monthView, (m) => watch.setMonths(code, key, m));
@@ -2173,13 +2207,13 @@ async function viewApt(code, key, id) {
     const w = watch.get(code, key);
     document.getElementById('star').classList.toggle('on', !!w);
     document.querySelectorAll('#areas button').forEach((x) => x.classList.toggle('saved', !!w && x.dataset.a === w.area));
-    const sel = `<b>${areaSel}㎡</b>`;
+    const sel = `<b>${fmtArea(areaSel)}</b>`;
     const toWatch = '<a href="#/watch">관심단지에서 요약 보기 →</a>';
     note.innerHTML = !w
       ? `★를 누르면 ${sel}를 관심 평형으로 관심단지에 저장해요. 관심단지에서 이 평형의 시세와 새로 확인된 거래를 모아 봐요. 가입 없이 이 브라우저에 저장돼요.`
       : w.area === areaSel
         ? `<span class="star on" aria-hidden="true">★</span> 관심 평형 ${sel}로 저장했어요. ${toWatch}`
-        : `<span class="star on" aria-hidden="true">★</span> ${w.area ? `관심 평형은 <b>${w.area}㎡</b>예요` : '관심 평형을 고르지 않아 주력 평형으로 요약해요'}. <button type="button" class="btn" id="setArea">${areaSel}㎡를 관심 평형으로</button> ${toWatch}`;
+        : `<span class="star on" aria-hidden="true">★</span> ${w.area ? `관심 평형은 <b>${fmtArea(w.area)}</b>예요` : '관심 평형을 고르지 않아 주력 평형으로 요약해요'}. <button type="button" class="btn" id="setArea">${fmtArea(areaSel)}${isPy() ? '을' : '를'} 관심 평형으로</button> ${toWatch}`;
     document.getElementById('setArea')?.addEventListener('click', () => { watch.setArea(code, key, areaSel); renderWatch(); });
   };
   document.getElementById('star').addEventListener('click', () => {
@@ -2235,7 +2269,7 @@ async function viewApt(code, key, id) {
       </div>
       <div class="card">
         <div class="tv-head">
-          <div class="tv-label">${areaSel}㎡ 매매가 <span class="muted">6개월 이동평균</span> ${tip('점 하나가 실거래 1건이고, 빨간 테두리는 신고가(같은 평형 이전 최고가를 넘은 거래)예요. 점을 누르면 그 거래의 상세 정보가 나오고, 카드에서 기준으로 잡으면 다른 거래·시점의 등락률을 보여줘요. 월봉은 그 달 첫 거래→마지막 거래가 몸통, 최저~최고가 꼬리예요 (전세 월봉은 오른 달은 채움, 내린 달은 속 빈 막대). 아래 칸은 월별 매매 건수. 1~3층을 끄면 점·월봉·건수에서만 빠지고 이동평균은 그대로예요.')}</div>
+          <div class="tv-label">${fmtArea(areaSel)} 매매가 <span class="muted">6개월 이동평균</span> ${tip('점 하나가 실거래 1건이고, 빨간 테두리는 신고가(같은 평형 이전 최고가를 넘은 거래)예요. 점을 누르면 그 거래의 상세 정보가 나오고, 카드에서 기준으로 잡으면 다른 거래·시점의 등락률을 보여줘요. 월봉은 그 달 첫 거래→마지막 거래가 몸통, 최저~최고가 꼬리예요 (전세 월봉은 오른 달은 채움, 내린 달은 속 빈 막대). 아래 칸은 월별 매매 건수. 1~3층을 끄면 점·월봉·건수에서만 빠지고 이동평균은 그대로예요.')}</div>
           <div class="tv-value num" id="apValue"></div>
           <div class="tv-sub num" id="apSub"></div>
         </div>
@@ -2296,7 +2330,7 @@ async function viewApt(code, key, id) {
       </div>
       <div class="card">
         <div class="tv-head">
-          <div class="tv-label">${areaSel}㎡ 전세가 <span class="muted">6개월 이동평균</span> ${tip('점 하나가 전세 실거래 1건이에요. 점을 누르면 그 거래의 상세 정보가 나오고, 카드에서 기준으로 잡으면 다른 거래·시점의 등락률을 보여줘요. 월봉은 그 달 첫 거래→마지막 거래가 몸통, 최저~최고가 꼬리예요. 아래 칸은 월별 전세 건수. 1~3층을 끄면 점·월봉·건수에서만 빠지고 이동평균은 그대로예요.')}</div>
+          <div class="tv-label">${fmtArea(areaSel)} 전세가 <span class="muted">6개월 이동평균</span> ${tip('점 하나가 전세 실거래 1건이에요. 점을 누르면 그 거래의 상세 정보가 나오고, 카드에서 기준으로 잡으면 다른 거래·시점의 등락률을 보여줘요. 월봉은 그 달 첫 거래→마지막 거래가 몸통, 최저~최고가 꼬리예요. 아래 칸은 월별 전세 건수. 1~3층을 끄면 점·월봉·건수에서만 빠지고 이동평균은 그대로예요.')}</div>
           <div class="tv-value num" id="apValue"></div>
           <div class="tv-sub num" id="apSub"></div>
         </div>
@@ -2471,7 +2505,7 @@ const isPartialDate = (date) => !!state.meta?.partial && date.slice(0, 4) + date
 // 빌드 번호 → 그 빌드의 날짜 (meta.builds). 0이나 모르는 번호는 null
 const buildDate = (no) => state.meta?.builds?.[no] || null;
 const md = (d) => (d ? `${+d.slice(5, 7)}/${+d.slice(8, 10)}` : '–'); // 2026-10-05 → 10/5
-const tradeLine = (t) => `${fmtDate(t.date)} · ${t.area}㎡ ${t.floor}층 · <b class="num">${fmtEok(t.price)}</b>`;
+const tradeLine = (t) => `${fmtDate(t.date)} · ${fmtArea(t.area, true)} ${t.floor}층 · <b class="num">${fmtEok(t.price)}</b>`;
 const SURGE_NOTE = '과거 거래 기준이며 앞으로의 가격을 뜻하지 않아요';
 // 급등 판정 근거. 높은 거래가 2건 미만이면 직전 최고가를 넘은 1건으로 판정한 것이라 그 사실을 앞에 적는다 (lib/changes.js surgeTest).
 // 2026-11 기준 변경 뒤로는 1건 급등이 새로 생기지 않지만, 최근 30일 변화 목록에 남은 예전 항목을 위해 둔다
@@ -2639,7 +2673,7 @@ function renderHeld() {
   if (!h) { el.innerHTML = ''; return; }
   const local = sync.local();
   const line = (x) => {
-    const act = !x.v ? '삭제' : !local.has(x.id) ? '추가' : x.v.area && x.v.area !== local.get(x.id).area ? `관심 평형 ${x.v.area}㎡로 변경` : '변경';
+    const act = !x.v ? '삭제' : !local.has(x.id) ? '추가' : x.v.area && x.v.area !== local.get(x.id).area ? `관심 평형 ${fmtArea(x.v.area)}${isPy() ? '으로' : '로'} 변경` : '변경';
     return `<li>${x.id.startsWith('r:') ? '♥' : '★'} ${esc(x.name)} — ${act}</li>`;
   };
   const [yes, no] = h.reason === 'link' ? ['합치기', '합치지 않기'] : ['다시 적용', '서버 값 유지'];
@@ -2758,7 +2792,7 @@ async function viewWatch(id) {
       const lines = [
         ...fresh.slice(0, 3).map((t) => `<li>${tradeLine(t)}${isHigh(t) ? ' <span class="tag high">신고가</span>' : ''}${t.kind === '직거래' ? ' <span class="tag">직거래</span>' : ''}${t.partial ? ` ${partialTag}` : ''}</li>`),
         fresh.length > 3 ? `<li class="muted">외 ${fresh.length - 3}건</li>` : '',
-        ...surge.slice(0, 1).map((x) => `<li><span class="up">${surgeName(x.basis)}</span> ${x.area}㎡ · ${surgeBasis(x.basis)} <span class="muted">(${SURGE_NOTE})</span></li>`),
+        ...surge.slice(0, 1).map((x) => `<li><span class="up">${surgeName(x.basis)}</span> ${fmtArea(x.area)} · ${surgeBasis(x.basis)} <span class="muted">(${SURGE_NOTE})</span></li>`),
         ...goneLines,
         fresh.length && !complete ? '<li class="muted">일부 달의 매매를 받지 못해 신고가는 판정하지 않았어요</li>' : '',
         otherFresh ? `<li class="muted">다른 평형에서 새로 확인 ${otherFresh}건</li>` : '',
@@ -2769,12 +2803,12 @@ async function viewWatch(id) {
       if (i < CMP_MAX) cmp[i] = { name: w.name, series: main.series.map((r) => ({ ym: r.ym, v: r.ma == null ? null : r.ma / (Number(main.area) / PYEONG) })) };
       el.innerHTML = `
         <div class="row"><b>${esc(w.name)}</b>${badges}<span class="spacer"></span><span class="muted">${esc(w.region)}</span></div>
-        <div class="row" style="margin-top:8px"><span class="num" style="font-size:20px;font-weight:600">${fmtEok(recentPrice)}</span><span class="muted">${main.area}㎡ ${picked ? '관심 평형' : '주력 평형'}</span><span class="spacer"></span>${sparkline(main.series.map((s) => s.ma), 100, 28)}</div>
-        ${w.area && !picked ? `<div class="muted" style="font-size:12px">관심 평형 ${w.area}㎡은 최근 3년 매매가 없어 주력 평형으로 보여요</div>` : ''}
+        <div class="row" style="margin-top:8px"><span class="num" style="font-size:20px;font-weight:600">${fmtEok(recentPrice)}</span><span class="muted">${fmtArea(main.area)} ${picked ? '관심 평형' : '주력 평형'}</span><span class="spacer"></span>${sparkline(main.series.map((s) => s.ma), 100, 28)}</div>
+        ${w.area && !picked ? `<div class="muted" style="font-size:12px">관심 평형 ${fmtArea(w.area)}은 최근 3년 매매가 없어 주력 평형으로 보여요</div>` : ''}
         <div class="row" style="font-size:12px;margin-top:6px">최고가 대비 ${delta(recentPrice / main.maxPrice - 1)} · 전세가율 ${fmtPct(main.indicators.jeonseRatio, 0)}</div>
         <div style="margin-top:6px">${phaseChip(main.indicators.phase)}</div>
         ${lines.length ? `<ul class="changes">${lines.join('')}</ul>` : ''}
-        <div class="muted" style="font-size:12px;margin-top:6px">${sameArea.length ? `${main.area}㎡ ` : ''}최근 계약 ${fmtDate(last.date)}${last.partial ? ' (이번 달 · 신고 진행 중)' : ''}${checkedLine ? ` · ${checkedLine}` : ''}${no && !lines.length ? ' · 새로 확인된 거래 없음' : ''}</div>`;
+        <div class="muted" style="font-size:12px;margin-top:6px">${sameArea.length ? `${fmtArea(main.area)} ` : ''}최근 계약 ${fmtDate(last.date)}${last.partial ? ' (이번 달 · 신고 진행 중)' : ''}${checkedLine ? ` · ${checkedLine}` : ''}${no && !lines.length ? ' · 새로 확인된 거래 없음' : ''}</div>`;
     } catch (e) {
       if (!isStale(id)) el.querySelector(':scope > .muted').textContent = `오류: ${e.message}`;
     }
@@ -2799,10 +2833,10 @@ async function viewWatch(id) {
     if (i < CMP_MAX) cmp[i] = { name: w.name, series: main.series.map((r) => ({ ym: r.ym, v: r.jeonseMa == null ? null : r.jeonseMa / (Number(main.area) / PYEONG) })) };
     el.innerHTML = `
       <div class="row"><b>${esc(w.name)}</b><span class="spacer"></span><span class="muted">${esc(w.region)}</span></div>
-      <div class="row" style="margin-top:8px"><span class="num" style="font-size:20px;font-weight:600">${fmtEok(recentJ)}</span><span class="muted">${main.area}㎡ ${picked ? '관심 평형' : '전세 주력 평형'} 전세</span><span class="spacer"></span>${sparkline(main.series.map((s) => s.jeonseMa), 100, 28)}</div>
-      ${w.area && !picked ? `<div class="muted" style="font-size:12px">관심 평형 ${w.area}㎡은 최근 3년 전세가 없어 전세가 가장 많은 평형으로 보여요</div>` : ''}
+      <div class="row" style="margin-top:8px"><span class="num" style="font-size:20px;font-weight:600">${fmtEok(recentJ)}</span><span class="muted">${fmtArea(main.area)} ${picked ? '관심 평형' : '전세 주력 평형'} 전세</span><span class="spacer"></span>${sparkline(main.series.map((s) => s.jeonseMa), 100, 28)}</div>
+      ${w.area && !picked ? `<div class="muted" style="font-size:12px">관심 평형 ${fmtArea(w.area)}은 최근 3년 전세가 없어 전세가 가장 많은 평형으로 보여요</div>` : ''}
       <div class="row" style="font-size:12px;margin-top:6px">최고 보증금 대비 ${delta(recentJ / maxJ - 1)} · 전세가율 ${fmtPct(main.indicators.jeonseRatio, 0)}</div>
-      <div class="muted" style="font-size:12px;margin-top:6px">${main.area}㎡ 최근 전세 계약 ${fmtDate(last.date)} · 최근 3년 ${jr.length}건</div>`;
+      <div class="muted" style="font-size:12px;margin-top:6px">${fmtArea(main.area)} 최근 전세 계약 ${fmtDate(last.date)} · 최근 3년 ${jr.length}건</div>`;
   }
   if (isStale(id)) return;
   if (changed.length) metrics.track('watch_change_available', { b: buildId(), c: changed.length, t: changed.reduce((a, b) => a + b, 0) });
@@ -2843,4 +2877,5 @@ function compareChart(items) {
 }
 
 initDeal();
+initUnit();
 route();
