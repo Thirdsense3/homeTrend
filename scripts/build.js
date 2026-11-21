@@ -13,6 +13,7 @@ const ledger = require('../lib/ledger');
 const ch = require('../lib/changes');
 const { kstNow } = require('../lib/kst');
 const policies = require('../lib/policies');
+const supply = require('../lib/supply');
 const regions = require('../data/regions.json');
 
 const ROOT = path.join(__dirname, '..');
@@ -40,6 +41,8 @@ function write(rel, data) {
   fs.rmSync(DIST, { recursive: true, force: true });
   // 정책 자료는 사람이 고치는 파일이라 수집 전에 형식부터 검사한다 (틀리면 이전 배포 유지)
   const policyData = policies.validate(JSON.parse(fs.readFileSync(path.join(ROOT, 'data', 'policies.json'), 'utf8')), regions);
+  // 입주 예정 물량 (로드맵 20번). 사람이 반기마다 받아 넣는 파일이라 정책 자료처럼 먼저 검사한다
+  const supplyData = supply.build(JSON.parse(fs.readFileSync(path.join(ROOT, 'data', 'supply.json'), 'utf8')), fs.readFileSync(path.join(ROOT, 'data', 'supply.csv'), 'utf8'), regions);
 
   const failures = [];
   let total = 0, bytes = 0;
@@ -140,6 +143,9 @@ function write(rel, data) {
   }
 
   write('data/policies.json', policyData);
+  // 이번 달 이전 입주 예정은 뺀다 (이미 입주했거나 미뤄졌을 수 있음)
+  write('data/supply.json', supply.publish(supplyData, `${partialYm.slice(0, 4)}-${partialYm.slice(4)}`));
+  console.log(`입주 예정: ${supplyData.asOf} 기준, 추적 지역 ${supplyData.kept}행 (그 밖 ${supplyData.dropped}행 제외)`);
   // 전체 단지 검색 목록 (상단 검색창)
   write('data/search.json', { v: 1, regions: search });
   // 수집 누락은 완성된 달만 (이번 달 실패는 지표·예측에 영향이 없다). 이번 달 실패는 meta.partial.missing으로 따로 알린다
