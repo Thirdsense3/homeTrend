@@ -55,6 +55,15 @@ test('국면 설명에 관측하지 않은 말(매물·호가)과 매수 시점 
   for (const p of Object.values(an.PHASES)) assert.doesNotMatch(p.note, /매물|호가|매수|시점|주의|리스트업|관망|바닥/);
 });
 
+test('거래량 기준 개월 수: 완성월이 36개보다 적으면 그만큼만 쓰고 volLongN에 담는다', () => {
+  const ym = (n) => Array.from({ length: n }, (_, i) => { const d = new Date(Date.UTC(2023, i, 1)); return `${d.getUTCFullYear()}${String(d.getUTCMonth() + 1).padStart(2, '0')}`; });
+  const at = (n) => { const ms = ym(n); return an.regionSummary(ms, ms.flatMap((m) => trades(m, 5000, 10)), []).indicators; };
+  assert.strictEqual(at(36).volLongN, 35); // 3년 조회: 마지막 신고 진행 월을 빼면 35개
+  assert.strictEqual(at(37).volLongN, 36);
+  assert.strictEqual(at(60).volLongN, 36);
+  assert.strictEqual(at(12).volLongN, 11);
+});
+
 test('전세가율은 최근 6개월 평당 전세 중위 ÷ 매매 중위', () => {
   const rows = yms.flatMap((ym) => trades(ym, 5000, 5));
   const rents = rows.map((r) => ({ ...r, deposit: Math.round(r.price * 0.6), monthly: 0 }));

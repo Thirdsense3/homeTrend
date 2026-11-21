@@ -248,7 +248,7 @@ function regionLead(name, ind) {
     out.push(Math.abs(ind.chg3m) < 0.003 ? `${esc(name)} 평당가는 최근 3개월(${fmtYm(ind.currentYm)}까지) 거의 그대로이고` : `${esc(name)} 평당가는 최근 3개월(${fmtYm(ind.currentYm)}까지) ${pctSpan(ind.chg3m)} ${ind.chg3m > 0 ? '올랐고' : '내렸고'}`);
   }
   if (ind.volVsAvg != null) {
-    out.push(Math.abs(ind.volVsAvg) < 0.05 ? '거래량은 36개월 중위 수준이에요.' : `거래량은 36개월 중위보다 ${pctSpan(ind.volVsAvg, 0)} ${ind.volVsAvg > 0 ? '많아요.' : '적어요.'}`);
+    out.push(Math.abs(ind.volVsAvg) < 0.05 ? `거래량은 ${volBase(ind)} 수준이에요.` : `거래량은 ${volBase(ind)}보다 ${pctSpan(ind.volVsAvg, 0)} ${ind.volVsAvg > 0 ? '많아요.' : '적어요.'}`);
   }
   if (ind.newHighShare != null) out.push(`최근 3개월 거래 중 <b>${fmtPct(ind.newHighShare, 0)}</b>가 신고가예요.`);
   return out.join(' ');
@@ -256,7 +256,9 @@ function regionLead(name, ind) {
 // 데이터를 기다리는 동안 보여 줄 회색 틀
 const skeleton = (note = '') => `<div class="sk sk-title"></div><div class="sk sk-line"></div><div class="kpis">${'<div class="sk sk-kpi"></div>'.repeat(4)}</div><div class="sk sk-chart"></div>${note ? `<p class="muted" style="font-size:12px">${note}</p>` : ''}`;
 // 국면 이름: 벌집순환 국면(1~6)만 번호를 붙인다. 거래량이 평년 수준인 상태(0·7·8)는 가격 방향만 적는다
-const PHASE_RULE = '가격은 3개월 변화 ±1.5%, 거래량은 최근 3개월 월평균 ÷ 과거 36개월 월 거래량 중위값 ±15%를 넘을 때 방향이 있다고 봐요.';
+// 거래량 기준 이름: 지표가 실제로 쓴 완성월 수 (최대 36, 조회 기간이 짧으면 그만큼. lib/analyze.js volLongN)
+const volBase = (ind) => `${ind?.volLongN ?? 36}개월 중위`;
+const PHASE_RULE = '가격은 3개월 변화 ±1.5%, 거래량은 최근 3개월 월평균 ÷ 과거 최대 36개월(조회 기간이 짧으면 그만큼)의 월 거래량 중위값 ±15%를 넘을 때 방향이 있다고 봐요.';
 const phaseTitle = (p) => `${A.isCycle(p.id) ? `${p.id}국면 ` : ''}${p.name}`;
 const phaseChip = (p) => (p ? `<span class="phase" title="${esc(`${p.note}. ${PHASE_RULE}`)}"><b>${esc(phaseTitle(p))}</b><span class="muted">${esc(p.desc)}</span></span>` : '<span class="muted">–</span>');
 
@@ -713,7 +715,7 @@ function priceVolumeChart(s, ind, L = '매매', pols = []) {
   bulk.setData(s.map((r) => (r.bulk ? { time: ymSec(r.ym), value: r.count + r.bulk } : { time: ymSec(r.ym) })));
   const vol = chart.addSeries(LWC.HistogramSeries, { ...volOpts, color: css('--volume') }, 1);
   vol.setData(s.map((r, i) => ({ time: ymSec(r.ym), value: r.count, ...(i === last ? { color: alpha(css('--volume'), 0.4) } : {}) })));
-  if (ind.volLong != null) vol.createPriceLine({ price: ind.volLong, color: css('--muted'), lineWidth: 1, lineStyle: LWC.LineStyle.Dashed, axisLabelVisible: true, title: '36개월 중위' });
+  if (ind.volLong != null) vol.createPriceLine({ price: ind.volLong, color: css('--muted'), lineWidth: 1, lineStyle: LWC.LineStyle.Dashed, axisLabelVisible: true, title: volBase(ind) });
   chart.panes()[0].setStretchFactor(3);
   chart.panes()[1].setStretchFactor(1);
 
@@ -1908,7 +1910,7 @@ function regionJeonseTop(region, ind) {
   const name = esc(region.name.replace(/ \(.+\)/, ''));
   const lead = [
     j.chg3m == null ? '' : Math.abs(j.chg3m) < 0.003 ? `${name} 평당 전세가는 최근 3개월(${fmtYm(j.currentYm)}까지) 거의 그대로이고` : `${name} 평당 전세가는 최근 3개월(${fmtYm(j.currentYm)}까지) ${pctSpan(j.chg3m)} ${j.chg3m > 0 ? '올랐고' : '내렸고'}`,
-    j.volVsAvg == null ? '' : Math.abs(j.volVsAvg) < 0.05 ? '전세 거래는 36개월 중위 수준이에요.' : `전세 거래는 36개월 중위보다 ${pctSpan(j.volVsAvg, 0)} ${j.volVsAvg > 0 ? '많아요.' : '적어요.'}`,
+    j.volVsAvg == null ? '' : Math.abs(j.volVsAvg) < 0.05 ? `전세 거래는 ${volBase(j)} 수준이에요.` : `전세 거래는 ${volBase(j)}보다 ${pctSpan(j.volVsAvg, 0)} ${j.volVsAvg > 0 ? '많아요.' : '적어요.'}`,
     ind.jeonseRatio != null ? `전세가율은 <b>${fmtPct(ind.jeonseRatio, 0)}</b>예요.` : '',
   ].filter(Boolean).join(' ');
   return `<p class="lead">${lead} ${tip('평당 전세가 = 전용면적 기준 전세 보증금 ÷ 평 (중위값). 이동평균은 거래된 단지 구성이 달라 생기는 착시를 보정한 값이고, 최근 지표는 신고가 끝난 달까지로 계산해요. 월세·반전세와 같은 날 한 단지에 몰린 일괄 계약은 빼요.')}</p>
@@ -1918,7 +1920,7 @@ function regionJeonseTop(region, ind) {
       <div class="kpi"><div class="label">3개월 변화</div><div class="value num">${delta(j.chg3m)}</div><div class="hint">12개월 ${delta(j.chg12m)}</div></div>
       <div class="kpi"><div class="label">기간 내 고점 대비</div><div class="value num">${delta(j.fromPeak)}</div><div class="hint">고점 ${fmtYm(j.peakYm)} · ${fmtMan(j.peak)}</div></div>
       <div class="kpi"><div class="label">고점 이후 저점 대비</div><div class="value num">${delta(j.fromLow)}</div><div class="hint">${j.lowYm ? `저점 ${fmtYm(j.lowYm)} · ${fmtMan(j.low)}` : '현재가 고점'}</div></div>
-      <div class="kpi"><div class="label">월 전세 거래 (최근 3개월)</div><div class="value num">${j.volRecent ?? '–'}건</div><div class="hint">36개월 중위 대비 ${delta(j.volVsAvg, 0)} · 직전 3개월 ${delta(j.volChg, 0)}</div></div>
+      <div class="kpi"><div class="label">월 전세 거래 (최근 3개월)</div><div class="value num">${j.volRecent ?? '–'}건</div><div class="hint">${volBase(j)} 대비 ${delta(j.volVsAvg, 0)} · 직전 3개월 ${delta(j.volChg, 0)}</div></div>
       <div class="kpi"><div class="label">전세가율 (최근 6개월)</div><div class="value num">${fmtPct(ind.jeonseRatio, 0)}</div><div class="hint">평당 전세가 ÷ 평당 매매가 · 매매 ${fmtMan(ind.current)}</div></div>
     </div>`;
 }
@@ -1946,17 +1948,17 @@ async function viewRegion(code, id) {
       <div class="kpi"><div class="label">3개월 변화</div><div class="value num">${delta(ind.chg3m)}</div><div class="hint">12개월 ${delta(ind.chg12m)}</div></div>
       <div class="kpi"><div class="label">기간 내 고점 대비</div><div class="value num">${delta(ind.fromPeak)}</div><div class="hint">고점 ${fmtYm(ind.peakYm)} · ${fmtMan(ind.peak)}</div></div>
       <div class="kpi"><div class="label">고점 이후 저점 대비</div><div class="value num">${delta(ind.fromLow)}</div><div class="hint">${ind.lowYm ? `저점 ${fmtYm(ind.lowYm)} · ${fmtMan(ind.low)}` : '현재가 고점'}</div></div>
-      <div class="kpi"><div class="label">월 거래량 (최근 3개월)</div><div class="value num">${ind.volRecent ?? '–'}건</div><div class="hint">36개월 중위 대비 ${delta(ind.volVsAvg, 0)} · 직전 3개월 ${delta(ind.volChg, 0)}${brokerOnly ? '' : ` · 직거래 ${fmtPct(ind.directShare, 0)}`}</div></div>
+      <div class="kpi"><div class="label">월 거래량 (최근 3개월)</div><div class="value num">${ind.volRecent ?? '–'}건</div><div class="hint">${volBase(ind)} 대비 ${delta(ind.volVsAvg, 0)} · 직전 3개월 ${delta(ind.volChg, 0)}${brokerOnly ? '' : ` · 직거래 ${fmtPct(ind.directShare, 0)}`}</div></div>
       <div class="kpi"><div class="label">전세가율 (최근 6개월)</div><div class="value num">${fmtPct(ind.jeonseRatio, 0)}</div><div class="hint">평당 전세가 ÷ 평당 매매가</div></div>
       <div class="kpi"><div class="label">신고가 비율 (최근 3개월)</div><div class="value num">${fmtPct(ind.newHighShare, 0)}</div><div class="hint">직전 거래보다 ${ind.upShare != null ? `오름 ${fmtPct(ind.upShare, 0)} · 내림 ${fmtPct(ind.downShare, 0)}` : '–'}</div></div>
     </div>
     ${forecastCard(code, brokerOnly)}
-    ${ind.phase ? `<p class="phase-note card"><b>${esc(phaseTitle(ind.phase))}</b> — ${esc(ind.phase.note)} (${fmtYm(ind.currentYm)}까지 3개월 가격 ${delta(ind.chg3m)} · 거래량 36개월 중위 대비 ${delta(ind.volVsAvg, 0)}) ${tip(PHASE_RULE)}</p>` : ''}`}
+    ${ind.phase ? `<p class="phase-note card"><b>${esc(phaseTitle(ind.phase))}</b> — ${esc(ind.phase.note)} (${fmtYm(ind.currentYm)}까지 3개월 가격 ${delta(ind.chg3m)} · 거래량 ${volBase(ind)} 대비 ${delta(ind.volVsAvg, 0)}) ${tip(PHASE_RULE)}</p>` : ''}`}
     <div class="card">
       <div class="tv-head">
         <div class="tv-label">평당 ${L}가 <span class="muted">3개월 이동평균 · 구성 보정 · 만원/3.3㎡</span> ${tip(J
-          ? '전세 보증금 ÷ 평의 월 중위값이에요. 아래 칸은 월별 전세 계약 수이고, 점선은 36개월 중위예요. 마지막 달(옅은 막대)은 신고 진행 중이라 덜 잡혀요. 같은 날 한 단지에 몰린 일괄 계약은 뺐어요. 휠·핀치로 확대하고 끌어서 이동할 수 있어요.'
-          : '아래 칸은 월별 매매 거래량이고, 점선은 36개월 중위예요. 마지막 달(옅은 막대)은 신고 진행 중이라 덜 잡혀요. 노란 막대는 통매각 같은 일괄 거래로 지표 계산에서 뺐어요. 휠·핀치로 확대하고 끌어서 이동할 수 있어요.')}</div>
+          ? `전세 보증금 ÷ 평의 월 중위값이에요. 아래 칸은 월별 전세 계약 수이고, 점선은 ${volBase(ind.jeonse)}(신고가 끝난 달 기준)예요. 마지막 달(옅은 막대)은 신고 진행 중이라 덜 잡혀요. 같은 날 한 단지에 몰린 일괄 계약은 뺐어요. 휠·핀치로 확대하고 끌어서 이동할 수 있어요.`
+          : `아래 칸은 월별 매매 거래량이고, 점선은 ${volBase(ind)}(신고가 끝난 달 기준)예요. 마지막 달(옅은 막대)은 신고 진행 중이라 덜 잡혀요. 노란 막대는 통매각 같은 일괄 거래로 지표 계산에서 뺐어요. 휠·핀치로 확대하고 끌어서 이동할 수 있어요.`)}</div>
         <div class="tv-value num" id="pvValue"></div>
         <div class="tv-sub num" id="pvSub"></div>
       </div>
@@ -1971,7 +1973,7 @@ async function viewRegion(code, id) {
         </div>
       </div>
       <div class="tv-box" id="pv"></div>
-      <p class="muted tv-note">아래 칸은 월별 ${L} 거래량 (점선 = 36개월 중위 ${(J ? ind.jeonse : ind).volLong ?? '–'}건/월)${!J && s.some((r) => r.bulk) ? ' · 노란 막대 = 일괄 거래(지표에서 제외)' : ''} · 휠·핀치로 확대${pols.length ? policyNote(code) : ''}</p>
+      <p class="muted tv-note">아래 칸은 월별 ${L} 거래량 (점선 = ${volBase(J ? ind.jeonse : ind)} ${(J ? ind.jeonse : ind).volLong ?? '–'}건/월)${!J && s.some((r) => r.bulk) ? ' · 노란 막대 = 일괄 거래(지표에서 제외)' : ''} · 휠·핀치로 확대${pols.length ? policyNote(code) : ''}</p>
     </div>
     <div class="${J ? '' : 'grid2'}">
       ${J ? '' : `<div class="card">
