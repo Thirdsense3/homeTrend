@@ -2471,7 +2471,8 @@ const buildDate = (no) => state.meta?.builds?.[no] || null;
 const md = (d) => (d ? `${+d.slice(5, 7)}/${+d.slice(8, 10)}` : '–'); // 2026-10-05 → 10/5
 const tradeLine = (t) => `${fmtDate(t.date)} · ${t.area}㎡ ${t.floor}층 · <b class="num">${fmtEok(t.price)}</b>`;
 const SURGE_NOTE = '과거 거래 기준이며 앞으로의 가격을 뜻하지 않아요';
-// 급등 판정 근거. 높은 거래가 2건 미만이면 직전 최고가를 넘은 1건으로 판정한 것이라 그 사실을 앞에 적는다 (lib/changes.js surgeTest)
+// 급등 판정 근거. 높은 거래가 2건 미만이면 직전 최고가를 넘은 1건으로 판정한 것이라 그 사실을 앞에 적는다 (lib/changes.js surgeTest).
+// 2026-11 기준 변경 뒤로는 1건 급등이 새로 생기지 않지만, 최근 30일 변화 목록에 남은 예전 항목을 위해 둔다
 const surgeOne = (b) => b && b.count < 2;
 const surgeBasis = (b) => (surgeOne(b)
   ? `기준 거래 ${b.n}건 대비 높은 거래 ${b.count}건 · 중위값 ${fmtEok(b.median)} 대비 ${delta(b.rise)}${b.max ? ` · 직전 6개월 최고가 ${fmtEok(b.max)} 넘음` : ''}`

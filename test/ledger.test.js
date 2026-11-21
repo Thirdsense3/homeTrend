@@ -132,8 +132,8 @@ test('원본 명칭 거래가 모두 사라져도 삭제 항목은 대표 단지
 
 // ---------- 변화 ----------
 const TODAY = '2026-10-18';
-// 직전 6개월에 10억 안팎 거래 n건
-const history = (n = 4, price = 100000) => Array.from({ length: n }, (_, i) => ({ ...t(`2026-0${4 + i}-10`, price + i * 100), firstSeen: 0 }));
+// 직전 6개월에 10억 안팎 거래 n건 (기준 거래는 5건 이상이어야 판정한다)
+const history = (n = 5, price = 100000) => Array.from({ length: n }, (_, i) => ({ ...t(`2026-0${4 + i}-10`, price + i * 100), firstSeen: 0 }));
 const changes = (trades, added, extra = {}) => ch.tradeChanges({ code: '11110', trades, added, removed: [], no: 301, today: TODAY, complete: true, ...extra });
 
 test('신고가: 이전에 확인된 같은 평형 최고가를 넘은 새 거래', () => {
@@ -155,7 +155,7 @@ test('급등: 중위값 +10% 거래가 60일 안에 2건이면 급등, 1건이�
   const items = changes([...old, a, b], [b]);
   assert.ok(items[0].flags.includes('surge'));
   assert.equal(items[0].basis.count, 2);
-  assert.equal(items[0].basis.n, 5); // 앞선 높은 거래도 직전 6개월 기준에 들어간다
+  assert.equal(items[0].basis.n, 6); // 앞선 높은 거래도 직전 6개월 기준에 들어간다
   const event = items.find((x) => x.type === 'surge');
   assert.ok(event && event.basis.rise >= 0.1);
   // 1건뿐이고 직전 6개월 최고가(10억 8천)를 5% 넘지 않으면 높은 가격 거래
@@ -163,35 +163,40 @@ test('급등: 중위값 +10% 거래가 60일 안에 2건이면 급등, 1건이�
   const single = changes([...old, peak, b], [b]);
   assert.ok(single[0].flags.includes('highPrice'));
   assert.ok(!single.some((x) => x.type === 'surge'));
-  // 1건이어도 최고가를 5% 넘으면 급등
+  // 1건이면 직전 최고가를 크게 넘어도 높은 가격 거래 (2026-11 1차 점검에서 바꿈)
   const big = { ...t('2026-10-05', 120000), firstSeen: 301 };
-  assert.ok(changes([...old, big], [big])[0].flags.includes('surge'));
+  const one = changes([...old, big], [big]);
+  assert.ok(one[0].flags.includes('highPrice') && !one[0].flags.includes('surge'));
+  assert.ok(!one.some((x) => x.type === 'surge'));
 });
 
 test('급등 판정 제외: 기준 거래 부족, 직거래·저층, 수집 실패, 60일보다 오래된 계약', () => {
   const big = (extra) => ({ ...t('2026-10-05', 130000, extra), firstSeen: 301 });
   const x = big();
-  assert.equal(changes([...history(2), x], [x])[0].flags?.includes('surge') ?? false, false);
+  // 기준 거래가 5건 미만이면 2건이 높아도 판정하지 않는다
+  const x0 = { ...t('2026-09-25', 130000), firstSeen: 201 };
+  assert.equal(changes([...history(3), x0, x], [x])[0].flags, undefined);
   for (const y of [big({ kind: '직거래' }), big({ floor: 2 })]) {
     assert.ok(!(changes([...history(), y], [y])[0].flags || []).some((f) => f === 'surge' || f === 'highPrice'));
   }
   // 직거래·저층 고가 거래는 기준값에도 들어가지 않는다
   const low = Array.from({ length: 3 }, (_, i) => ({ ...t(`2026-0${5 + i}-01`, 150000, { floor: 1 }), firstSeen: 0 }));
-  assert.equal(changes([...history(), ...low, x], [x])[0].basis.n, 4);
+  assert.equal(changes([...history(), ...low, x], [x])[0].basis.n, 5);
   assert.equal(changes([...history(), x], [x], { complete: false })[0].flags, undefined);
   const late = { ...t('2026-07-30', 130000), firstSeen: 301 };
-  assert.ok(!(changes([...history(), late], [late])[0].flags || []).includes('surge'));
+  assert.ok(!(changes([...history(), late], [late])[0].flags || []).some((f) => f === 'surge' || f === 'highPrice'));
   // 60일 안이면 늦게 신고된 거래도 판정한다
   const lateOk = { ...t('2026-08-25', 130000), firstSeen: 301 };
-  assert.ok(changes([...history(), lateOk], [lateOk])[0].flags.includes('surge'));
+  assert.ok(changes([...history(), lateOk], [lateOk])[0].flags.includes('highPrice'));
 });
 
 test('같은 단지·평형 급등은 30일에 한 번만', () => {
+  const x0 = { ...t('2026-09-25', 130000), firstSeen: 201 };
   const x = { ...t('2026-10-05', 130000), firstSeen: 301 };
   const recent = [{ type: 'surge', code: '11110', key: '동|A', area: 84.97, d: '2026-10-01' }];
-  assert.ok(!changes([...history(), x], [x], { recent }).some((i) => i.type === 'surge'));
+  assert.ok(!changes([...history(), x0, x], [x], { recent }).some((i) => i.type === 'surge'));
   const old = [{ ...recent[0], d: '2026-09-10' }];
-  assert.ok(changes([...history(), x], [x], { recent: old }).some((i) => i.type === 'surge'));
+  assert.ok(changes([...history(), x0, x], [x], { recent: old }).some((i) => i.type === 'surge'));
 });
 
 test('삭제된 거래와 변화 id는 같은 입력이면 같다', () => {
