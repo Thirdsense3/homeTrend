@@ -2098,6 +2098,8 @@ async function viewRegion(code, id) {
 // ---------- 지역 상세: 입주 예정 물량 (로드맵 20번, 자료는 lib/supply.js) ----------
 // 한국부동산원·부동산R114의 반기 추정치. 기준일과 '추정치'를 함께 적고, 가격과의 인과는 말하지 않는다.
 // 사업유형(분양·임대·분양임대)은 전세 시장에서 의미가 달라 그대로 보이고 켜고 끌 수 있게 한다
+// 한 단지가 분양·임대 행으로 나뉘어 있고, 주소(지번 0-0을 여러 단지가 공유)와 이름(유형마다 다름)으로 같은 단지를 가릴 수 없어
+// 단지 수가 아니라 공급 항목(행) 수로 센다 (PR #50 리뷰)
 const SUPPLY_TYPES = [['분양', '--series-1'], ['임대', '--series-2'], ['분양임대', '--series-4']];
 const supplyYm = (ym) => (ym.endsWith('-00') ? `${ym.slice(2, 4)}년 중 (월 미정)` : `${ym.slice(2, 4)}.${ym.slice(5)}`);
 function supplyCard(code, region) {
@@ -2111,7 +2113,7 @@ function supplyCard(code, region) {
   const yms = [];
   for (let y = +sp.from.slice(0, 4), m = +sp.from.slice(5); `${y}-${String(m).padStart(2, '0')}` <= last; m === 12 ? (y++, m = 1) : m++) yms.push(`${y}-${String(m).padStart(2, '0')}`);
   const asOf = `${sp.asOf.slice(0, 4)}년 ${+sp.asOf.slice(5, 7)}월 말`;
-  const note = `한국부동산원과 부동산R114가 주택건설실적·입주자모집공고·정비사업 추진실적으로 추정한 30세대 이상 공동주택의 입주 예정 물량이에요 (${asOf} 기준, 반기마다 갱신). 기준일 뒤의 공사 중단·일정 변경·후분양은 반영되지 않아 실제와 다를 수 있어요. 이번 달 이전에 예정됐던 단지는 이미 입주했거나 미뤄졌을 수 있어 뺐어요. 지역의 기존 세대수 자료가 없어 재고 대비 비율은 보여 주지 않아요.`;
+  const note = `한국부동산원과 부동산R114가 주택건설실적·입주자모집공고·정비사업 추진실적으로 추정한 30세대 이상 공동주택의 입주 예정 물량이에요 (${asOf} 기준, 반기마다 갱신). 기준일 뒤의 공사 중단·일정 변경·후분양은 반영되지 않아 실제와 다를 수 있어요. 이번 달 이전에 예정됐던 단지는 이미 입주했거나 미뤄졌을 수 있어 뺐어요. 지역의 기존 세대수 자료가 없어 재고 대비 비율은 보여 주지 않아요. 같은 단지라도 분양·임대가 나뉘면 공급 항목이 따로 적혀 있어요. 주소와 이름으로는 같은 단지인지 가릴 수 없어 단지 수 대신 항목 수를 보여 줘요.`;
   const render = () => {
     const rows = list.filter((x) => !off.has(x.type));
     const units = rows.reduce((a, x) => a + x.units, 0);
@@ -2119,11 +2121,11 @@ function supplyCard(code, region) {
     destroySupplyChart();
     box.innerHTML = `<div class="card">
       <h2>입주 예정 물량 <span class="muted">추정치 · ${asOf} 기준</span> ${tip(note)}</h2>
-      ${list.length ? `<p class="muted" style="margin:-6px 0 8px;font-size:13px">${fmtYm(sp.from.replace('-', ''))}~${fmtYm(last.replace('-', ''))} ${name}에 <b class="num">${rows.length.toLocaleString()}개 단지 · ${units.toLocaleString()}세대</b> 입주 예정${off.size ? ` (${[...off].join('·')} 제외)` : ''}</p>
-      <div class="chips" id="supplyToggle" style="margin-bottom:8px">${SUPPLY_TYPES.map(([t, c]) => `<button data-t="${t}" class="${off.has(t) ? '' : 'on'}" title="눌러서 켜고 끄기"><i style="background:${css(c)}"></i>${t} ${list.filter((x) => x.type === t).reduce((a, x) => a + x.units, 0).toLocaleString()}세대</button>`).join('')}</div>
+      ${list.length ? `<p class="muted" style="margin:-6px 0 8px;font-size:13px">${fmtYm(sp.from.replace('-', ''))}~${fmtYm(last.replace('-', ''))} ${name}에 <b class="num">${units.toLocaleString()}세대</b> 입주 예정 (공급 항목 ${rows.length.toLocaleString()}건)${off.size ? ` (${[...off].join('·')} 제외)` : ''}</p>
+      <div class="chips" id="supplyToggle" style="margin-bottom:8px">${SUPPLY_TYPES.filter(([t]) => list.some((x) => x.type === t)).map(([t, c]) => `<button data-t="${t}" class="${off.has(t) ? '' : 'on'}" title="눌러서 켜고 끄기"><i style="background:${css(c)}"></i>${t} ${list.filter((x) => x.type === t).reduce((a, x) => a + x.units, 0).toLocaleString()}세대</button>`).join('')}</div>
       <div class="chart-box short"><canvas id="supplyChart"></canvas></div>
       ${rows.some((x) => x.ym.endsWith('-00')) ? `<p class="muted tv-note">입주 월이 정해지지 않은 ${rows.filter((x) => x.ym.endsWith('-00')).reduce((a, x) => a + x.units, 0).toLocaleString()}세대는 막대에 넣지 않고 아래 목록에만 있어요.</p>` : ''}
-      ${rows.length ? `<div class="table-wrap" style="margin-top:12px"><table><thead><tr><th class="l">입주 예정</th><th class="l">단지</th><th class="l">위치</th><th class="l">유형</th><th>세대수</th></tr></thead><tbody>
+      ${rows.length ? `<div class="table-wrap" style="margin-top:12px"><table><thead><tr><th class="l">입주 예정</th><th class="l">단지 (공급 항목)</th><th class="l">위치</th><th class="l">유형</th><th>세대수</th></tr></thead><tbody>
         ${rows.map((x) => `<tr><td>${supplyYm(x.ym)}</td><td class="l">${esc(x.name)}</td><td class="l">${esc(x.loc)}</td><td class="l">${esc(x.type)}</td><td>${x.units.toLocaleString()}</td></tr>`).join('')}
       </tbody></table></div>` : ''}` : `<p class="muted">이 자료 기준으로 ${fmtYm(sp.from.replace('-', ''))} 이후 ${name}의 입주 예정 단지(30세대 이상)는 없어요.</p>`}
       <p class="muted tv-note">출처: <a href="${esc(sp.source)}" target="_blank" rel="noopener">한국부동산원 입주예정물량정보</a> (공공데이터포털, ${fmtDate(sp.updated)} 수정) · 확정 물량이 아닌 추정치예요</p>
