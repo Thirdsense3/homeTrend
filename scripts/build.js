@@ -193,6 +193,7 @@ function write(rel, data) {
   }
   fs.copyFileSync(path.join(ROOT, 'lib', 'complexes.js'), path.join(DIST, 'complexes.js'));
   fs.copyFileSync(path.join(ROOT, 'lib', 'analyze.js'), path.join(DIST, 'analyze.js'));
+  fs.copyFileSync(path.join(ROOT, 'lib', 'profile.js'), path.join(DIST, 'profile.js'));
   const html = fs.readFileSync(path.join(DIST, 'index.html'), 'utf8')
     .replace('<script src="analyze.js"></script>', '<script>window.HT_STATIC = true;</script>\n  <script src="analyze.js"></script>');
   write('index.html', html);

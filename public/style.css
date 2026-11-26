@@ -394,3 +394,28 @@ ul.changes a { color: var(--series-1); text-decoration: none; }
 .timeline .tl-body p { margin: 4px 0; line-height: 1.6; }
 .timeline .tl-meta { font-size: 12px; }
 .timeline .tl-body .tag:first-child { margin-left: 0; }
+
+/* 내 조건 (로드맵 22번) */
+.pf-private { font-size: 13px; color: var(--ink-2); background: var(--accent-wash); border-radius: 8px; padding: 8px 12px; }
+.pf-sec { margin-top: 16px; }
+.pf-sec h2 { margin: 0 0 12px; }
+.pf-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px 16px; }
+.pf-field { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--ink-2); min-width: 0; }
+.pf-field small { font-size: 12px; min-height: 1em; }
+.pf-input { display: flex; align-items: center; gap: 6px; }
+.pf-input em { font-style: normal; white-space: nowrap; font-size: 12px; color: var(--muted); }
+.pf-field input, .pf-field select {
+  font: inherit; font-size: 15px; color: var(--ink); background: var(--page);
+  border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; min-width: 0; width: 100%;
+}
+.pf-input input { text-align: right; font-variant-numeric: tabular-nums; }
+.pf-check { display: inline-flex; align-items: center; gap: 6px; font-size: 14px; margin: 10px 16px 0 0; }
+.pf-checks { display: flex; flex-wrap: wrap; }
+.pf-loan { display: grid; grid-template-columns: minmax(120px, 1fr) repeat(3, minmax(120px, 1.2fr)) auto; gap: 8px 12px; align-items: start; padding: 10px 0; border-top: 1px solid var(--border); }
+.pf-loan:first-of-type { border-top: 0; }
+.pf-del { align-self: center; }
+@media (max-width: 720px) { .pf-loan { grid-template-columns: 1fr 1fr; } .pf-del { justify-self: start; } }
+.pf-notes { margin: 8px 0 0; padding-left: 18px; font-size: 13px; }
+.pf-notes li + li { margin-top: 4px; }
+.pf-notes .warn { color: var(--up); }
+.pf-notes .need, .pf-notes .scope, .pf-notes .info { color: var(--ink-2); }
