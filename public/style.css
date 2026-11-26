@@ -419,3 +419,13 @@ ul.changes a { color: var(--series-1); text-decoration: none; }
 .pf-notes li + li { margin-top: 4px; }
 .pf-notes .warn { color: var(--up); }
 .pf-notes .need, .pf-notes .scope, .pf-notes .info { color: var(--ink-2); }
+.pf-calc h2 { margin: 0 0 12px; }
+.pf-calc #calcOut { margin-top: 16px; }
+.pf-top { font-size: 14px; margin: 0 0 12px; }
+.pf-tables { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr)); gap: 16px; }
+.pf-tables table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.pf-tables th, .pf-tables td { padding: 6px 4px; border-bottom: 1px solid var(--border); text-align: right; vertical-align: top; }
+.pf-tables .l { text-align: left; }
+.pf-tables td .muted { font-size: 12px; }
+.pf-tables tr.bind td { font-weight: 600; }
+.pf-tables .l { white-space: normal; }
