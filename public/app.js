@@ -1107,7 +1107,7 @@ async function route() {
     else if (view === 'watch') await viewWatch(id);
     else if (view === 'privacy') viewPrivacy();
     else if (view === 'policy') await viewPolicy(parts[1], id);
-    else if (view === 'me') viewProfile();
+    else if (view === 'me') await viewProfile(parts.slice(1));
     else await viewOverview(tab, id);
   } catch (e) {
     if (!isStale(id)) app.innerHTML = `<div class="card err">불러오지 못했습니다: ${esc(e.message)}</div>`;
@@ -2336,7 +2336,7 @@ async function viewApt(code, key, id) {
 
     document.getElementById('areaView').innerHTML = `
       <div class="kpis">
-        <div class="kpi"><div class="label">최근 시세 (최근 3건 중위)</div><div class="value num">${fmtEok(recent)}</div><div class="hint">마지막 ${last ? `${last.date.slice(2).replace(/-/g, '.')} · ${last.floor}층 ${fmtEok(last.price)}` : '해당 기간 매매 거래 없음'}</div></div>
+        <div class="kpi"><div class="label">최근 시세 (최근 3건 중위)</div><div class="value num">${fmtEok(recent)}</div><div class="hint">마지막 ${last ? `${last.date.slice(2).replace(/-/g, '.')} · ${last.floor}층 ${fmtEok(last.price)}` : '해당 기간 매매 거래 없음'}${recent ? ` · <a href="#/me/${code}/${Math.round(recent)}/${areaSel}">내 조건으로 계산</a>` : ''}</div></div>
         <div class="kpi"><div class="label">기간 내 최고가</div><div class="value num">${fmtEok(max?.price)}</div><div class="hint">${max ? `${max.date.slice(2).replace(/-/g, '.')} · ${max.floor}층` : '해당 기간 매매 거래 없음'}</div></div>
         <div class="kpi"><div class="label">최고가 대비</div><div class="value num">${delta(recent && max ? recent / max.price - 1 : null)}</div><div class="hint">6개월 이동평균 3개월 변화 ${delta(ind.chg3m)}</div></div>
         <div class="kpi"><div class="label">전세 시세</div><div class="value num">${fmtEok(jRecent)}</div><div class="hint">전세가율 ${fmtPct(ind.jeonseRatio, 0)} · 갭 ${jRecent && recent ? fmtEok(recent - jRecent) : '–'}</div></div>
@@ -2966,8 +2966,9 @@ const pfCheck = (name, label, on, hint = '') => `<label class="pf-check"><input 
 const pfSelect = (name, label, cur, opts) => `<label class="pf-field"><span>${label}</span><select name="${name}">${opts.map(([v, l]) => `<option value="${v}" ${String(v) === String(cur) ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select></label>`;
 const pfCount = (name, label, v) => pfSelect(name, label, v ?? '', [['', '선택'], ...[0, 1, 2, 3, 4].map((n) => [n, `${n}${n === 4 ? '+' : ''}`])]);
 
-function viewProfile() {
+async function viewProfile([preCode, prePrice, preArea] = []) {
   const Pf = window.Profile;
+  const Ln = window.Loan;
   let p = profileStore.get();
   let rows = p.loans.map((l) => ({ ...l }));
   const loanRow = (l, i) => `<div class="pf-loan" data-i="${i}">
@@ -3011,11 +3012,12 @@ function viewProfile() {
       ${kpi('소득 대비 기존 상환', s.debtRatio == null ? '–' : fmtPct(s.debtRatio), '규제 DSR과 산정 방식이 다를 수 있어요')}
     </div>
     ${s.notes.length ? `<ul class="pf-notes">${s.notes.map((n) => `<li class="${n.level}">${esc(n.text)}</li>`).join('')}</ul>` : ''}
-    <p class="muted" style="font-size:12px;margin:8px 0 0">대출 가능액·필요 현금·월 부담 계산은 다음 단계(로드맵 23번)에서 이 값을 써서 보여 줘요.${p.updated ? ` · 마지막 저장 ${fmtDate(p.updated.slice(0, 10))}` : ''}</p>`;
+    <p class="muted" style="font-size:12px;margin:8px 0 0">아래 '집값으로 계산'이 이 값을 써요.${p.updated ? ` · 마지막 저장 ${fmtDate(p.updated.slice(0, 10))}` : ''}</p>`;
   };
   app.innerHTML = `<div class="row"><h1>내 조건</h1><span class="spacer"></span><button type="button" class="btn" id="pfClear">모두 지우기</button></div>
     <p class="pf-private">이 값은 <b>이 기기의 브라우저에만</b> 저장해요. 서버로 보내지 않고, 측정·공유 링크·동기화 코드에도 넣지 않아요. 다른 기기와 맞추는 기능은 비밀번호로 암호화하는 방식으로 따로 만들 예정이에요.</p>
     <section class="card" id="pfSummary">${summaryHtml()}</section>
+    <section class="card pf-calc" id="pfCalc"></section>
     <form id="pfForm" autocomplete="off">${form()}</form>`;
   const formEl = app.querySelector('#pfForm');
   const summaryEl = app.querySelector('#pfSummary');
@@ -3036,7 +3038,15 @@ function viewProfile() {
     const ok = profileStore.set(raw);
     p = ok ? profileStore.get() : { ...Pf.normalize(raw), updated: null };
     summaryEl.innerHTML = summaryHtml() + (ok ? '' : '<p class="sync-warn">이 브라우저에 저장할 수 없어요(사생활 보호 모드 등). 이번 방문에만 계산에 써요.</p>');
+    renderCalc();
   };
+  const calc = profileCalc(Ln, Pf, () => p);
+  const renderCalc = calc.render;
+  if (preCode && regionOf(preCode) && Number(prePrice) > 0) {
+    calc.set({ code: preCode, price: Math.round(Number(prePrice)), over85: Number(preArea) > 85 });
+    history.replaceState(null, '', '#/me');
+  }
+  calc.mount(app.querySelector('#pfCalc'));
   formEl.addEventListener('input', (e) => {
     const t = e.target;
     if (t.inputMode === 'numeric') {
@@ -3063,6 +3073,115 @@ function viewProfile() {
     profileStore.clear();
     viewProfile();
   };
+}
+
+// 집값으로 계산 (로드맵 23번): 대출 가능액·필요 현금·월 부담. 입력은 이 기기 브라우저에만 둔다
+const CALC_KEY = 'homeTrend.calc';
+const BINDING = { ltv: 'LTV', cap: '주담대 상한', dsr: 'DSR' };
+function profileCalc(Ln, Pf, getProfile) {
+  const read = () => { try { return JSON.parse(localStorage.getItem(CALC_KEY)) || {}; } catch (_) { return {}; } };
+  let input = { code: '11680', price: null, rate: null, over85: false, other: null, ...read() };
+  let rateRef = null; // 한국은행 주담대 평균 금리 [기준월, 값]
+  let el = null;
+  const write = () => { try { localStorage.setItem(CALC_KEY, JSON.stringify(input)); } catch (_) { /* 저장 불가 */ } };
+  const num = (v) => { const n = Number(String(v ?? '').replace(/[,\s]/g, '')); return Number.isFinite(n) && n > 0 ? n : null; };
+  const rate = () => input.rate ?? rateRef?.[1] ?? 4;
+  const pct = (x, d = 0) => `${(x * 100).toFixed(d)}%`;
+  const row = (label, v, cls = '') => `<tr class="${cls}"><td class="l">${label}</td><td>${v}</td></tr>`;
+
+  function result() {
+    const s = Pf.summary(getProfile());
+    if (s.empty) return '<p class="muted">아래에 자금·소득·주택 수를 넣으면 계산해요.</p>';
+    if (!s.supported) return `<p class="muted">지금은 무주택 실거주 매수만 계산해요. 주택 수와 실거주 목적을 확인해 주세요.</p>`;
+    if (!input.price) return '<p class="muted">매매가를 넣거나, 단지 화면의 \'내 조건으로 계산\'으로 들어오세요.</p>';
+    const opts = { price: input.price, code: input.code, rate: rate(), over85: input.over85, other: input.other };
+    const r = Ln.evaluate(s, opts);
+    const top = Ln.maxPrice(s, opts);
+    const R = Ln.RULES;
+    const lim = (k, label, v, how) => row(`${label}${r.binding === k ? ' <span class="tag high">걸림</span>' : ''}<div class="muted">${how}</div>`, v == null ? '–' : fmtEok(Math.floor(v)), r.binding === k ? 'bind' : '');
+    const t = r.tax;
+    const notes = [
+      r.landPermit && `토지거래허가구역(${fmtDate(R.landPermit.until)}까지 지정, 연장 여부 확인 중)이라 계약 전에 허가를 받아야 하고 ${R.landPermit.residenceYears}년 실거주 의무가 있어요. 세입자가 있는 집을 사서 전세를 끼고 들어가는 방식은 실거주 유예 요건을 따로 확인해야 해요.`,
+      getProfile().firstTime && `생애최초 LTV 70%는 ${R.moveInMonths}개월 안에 전입해야 해요.`,
+      r.incomeMissing && '소득이 없어 DSR 한도를 빼고 계산했어요.',
+      s.debtYear > 0 && '기존 대출은 입력한 월 상환액으로 셌어요. 은행은 신용대출 등을 정해진 만기로 다시 계산해 더 크게 볼 수 있어요.',
+      getProfile().term > R.maxTermYears && `수도권 주담대 만기는 ${R.maxTermYears}년까지라 ${R.maxTermYears}년으로 계산했어요.`,
+    ].filter(Boolean);
+    return `<div class="kpis">
+        <div class="kpi"><div class="label">최대 대출</div><div class="value num">${fmtEok(r.loan)}</div><div class="hint">${BINDING[r.binding]} 한도에 걸림 · 매매가의 ${pct(r.loan / r.price)}</div></div>
+        <div class="kpi"><div class="label">필요 현금</div><div class="value num">${fmtEok(r.need)}</div><div class="hint">매매가 − 대출 + 세금·비용 ${fmtEok(r.costs)}</div></div>
+        <div class="kpi"><div class="label">내 자금 대비</div><div class="value num ${r.left == null ? '' : r.left >= 0 ? 'down' : 'up'}">${r.left == null ? '–' : `${r.left >= 0 ? '' : '−'}${fmtEok(Math.abs(r.left))}`}</div><div class="hint">${r.left == null ? '자금을 넣어 주세요' : r.left >= 0 ? '남는 돈' : '부족한 돈'}</div></div>
+        <div class="kpi"><div class="label">월 상환 (원리금균등)</div><div class="value num">${fmtMan(r.pay)}</div><div class="hint">첫 달 이자 ${fmtMan(r.interest)} + 원금 ${fmtMan(r.principal)}${r.payRatio != null ? ` · 소득의 ${pct(r.payRatio)}` : ''}</div></div>
+      </div>
+      ${top != null ? `<p class="pf-top">이 지역·금리 조건에서 내 자금으로 살 수 있는 최대 가격은 <b>${fmtEok(top)}</b> 정도예요. <span class="muted">(필요 현금 = 쓸 수 있는 자금이 되는 가격)</span></p>` : ''}
+      <div class="pf-tables">
+        <table><thead><tr><th class="l">대출 한도 (가장 작은 값)</th><th>금액</th></tr></thead><tbody>
+          ${lim('ltv', 'LTV', r.limits.ltv, `매매가 × ${pct(r.ltvRate)} (${getProfile().firstTime ? '생애최초' : r.regulated ? '규제지역 무주택' : '비규제 수도권 무주택'})`)}
+          ${lim('cap', '주담대 상한', r.limits.cap, '수도권·규제지역, 시가 15억 이하 6억 · 25억 이하 4억 · 초과 2억')}
+          ${lim('dsr', 'DSR', r.limits.dsr, r.incomeMissing ? '소득 입력 필요' : `소득 × ${pct(R.dsr)} − 기존 상환 = 연 ${fmtEok(r.dsrRoom)}, 금리 ${rate()}% + 스트레스 ${r.stressAdd.toFixed(1)}%p, ${r.term}년`)}
+        </tbody></table>
+        <table><thead><tr><th class="l">필요 현금</th><th>금액</th></tr></thead><tbody>
+          ${row('매매가', fmtEok(r.price))}
+          ${row('− 대출', `−${fmtEok(r.loan)}`)}
+          ${row(`취득세 ${t.rate}%${t.relief ? ` <span class="muted">(생애최초 감면 −${fmtMan(t.relief)})</span>` : ''}`, fmtMan(t.tax - t.relief))}
+          ${row('지방교육세', fmtMan(t.edu))}
+          ${t.rural ? row('농어촌특별세 (85㎡ 초과)', fmtMan(t.rural)) : ''}
+          ${row(`중개보수 상한 ${(r.broker.rate * 100).toFixed(1)}% <span class="muted">(부가세 별도일 수 있음)</span>`, fmtMan(r.broker.fee))}
+          ${row(`등기·법무·채권 등${input.other == null ? ' <span class="muted">(매매가 0.2% 어림)</span>' : ''}`, fmtMan(r.other))}
+          ${row('필요 현금', fmtEok(r.need), 'bind')}
+        </tbody></table>
+      </div>
+      ${notes.length ? `<ul class="pf-notes">${notes.map((n) => `<li>${esc(n)}</li>`).join('')}</ul>` : ''}
+      <p class="muted" style="font-size:12px;margin:8px 0 0">입력한 가정으로 계산한 참고값이에요. 실제 한도·금리는 금융기관 심사(KB 시세·감정가, 소득 인정 방식 등)로 정해지고, 정책대출(디딤돌·보금자리론 등)은 따로 계산하지 않았어요.
+        규칙 기준일 ${fmtDate(R.asOf)} · ${Object.entries(R.sources).map(([k, u]) => `<a href="${esc(u)}" target="_blank" rel="noopener">${esc(k)}</a>`).join(' · ')}</p>`;
+  }
+
+  function render() {
+    if (!el) return;
+    const out = el.querySelector('#calcOut');
+    if (out) out.innerHTML = result();
+  }
+
+  function mount(target) {
+    el = target;
+    const regions = state.meta.regions;
+    el.innerHTML = `<h2>집값으로 계산</h2>
+      <div class="pf-grid">
+        <label class="pf-field"><span>지역</span><select name="code">${['서울', '경기'].map((g) => `<optgroup label="${g}">${regions.filter((x) => x.group === g).map((x) => `<option value="${x.code}" ${x.code === input.code ? 'selected' : ''}>${esc(x.name)}${Ln.isRegulated(x.code) ? ' · 규제지역' : ''}</option>`).join('')}</optgroup>`).join('')}</select></label>
+        <label class="pf-field"><span>매매가</span><span class="pf-input"><input type="text" inputmode="numeric" name="price" value="${input.price ?? ''}" placeholder="0" autocomplete="off"><em>만원</em></span><small class="muted" data-eok="price">${input.price ? fmtEok(input.price) : ''}</small></label>
+        <label class="pf-field"><span>대출 금리 ${tip('은행이 실제로 줄 금리예요. 비워 두면 한국은행 신규 주택담보대출 평균 금리를 써요. DSR 한도는 여기에 스트레스 금리를 더해 계산해요.')}</span><span class="pf-input"><input type="text" inputmode="decimal" name="rate" value="${input.rate ?? ''}" placeholder="${rateRef ? rateRef[1] : '4'}" autocomplete="off"><em>%</em></span><small class="muted" id="rateRef">${rateRef ? `비우면 ${rateRef[1]}% (한국은행 ${fmtYm(rateRef[0])} 평균)` : ''}</small></label>
+        <label class="pf-field"><span>등기·법무·채권 등</span><span class="pf-input"><input type="text" inputmode="numeric" name="other" value="${input.other ?? ''}" placeholder="어림값" autocomplete="off"><em>만원</em></span><small class="muted">비우면 매매가의 0.2%</small></label>
+      </div>
+      ${pfCheck('over85', '전용 85㎡ 초과 (농어촌특별세)', input.over85)}
+      <div id="calcOut"></div>`;
+    const onInput = (e) => {
+      const t = e.target;
+      if (!t.name) return;
+      if (t.name === 'code') input.code = t.value;
+      else if (t.name === 'over85') input.over85 = t.checked;
+      else if (t.name === 'rate') { const n = Number(t.value); input.rate = t.value.trim() && Number.isFinite(n) && n >= 0 && n <= 30 ? n : null; }
+      else {
+        input[t.name] = num(t.value);
+        const o = el.querySelector(`[data-eok="${t.name}"]`);
+        if (o) o.textContent = input[t.name] ? fmtEok(input[t.name]) : '';
+      }
+      write();
+      render();
+    };
+    el.addEventListener('input', onInput);
+    el.addEventListener('change', onInput);
+    render();
+    getMacro().then((m) => {
+      const pts = m?.series?.find((x) => x.id === 'mortgageRate')?.points;
+      if (!pts?.length || !el.isConnected) return;
+      rateRef = pts[pts.length - 1];
+      el.querySelector('[name="rate"]').placeholder = rateRef[1];
+      el.querySelector('#rateRef').textContent = `비우면 ${rateRef[1]}% (한국은행 ${fmtYm(rateRef[0])} 평균)`;
+      render();
+    });
+  }
+
+  return { mount, render, set(v) { input = { ...input, ...v }; write(); } };
 }
 
 initDeal();
