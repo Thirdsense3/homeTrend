@@ -1092,19 +1092,22 @@ async function route() {
     const tab = view === 'r' || view === 'a' ? regionOf(parts[1])?.group
       : view === 'watch' ? 'watch'
       : view === 'privacy' ? null
+      : view === 'me' ? 'me'
       : view === 'policy' ? 'policy'
       : view === 'g' && parts[1] ? parts[1] : '서울';
     document.querySelectorAll('#tabs a').forEach((a) => a.classList.toggle('on', a.dataset.tab === tab));
     // 화면 종류만 기록 (기간·테마·매매/전세 보기를 바꿔 다시 그려도 같은 화면으로 센다. 집계는 기기 수 기준)
     const j = isJ() && view !== 'privacy' ? { j: 1 } : undefined;
-    // 정책 타임라인은 측정 행동 종류(infra/functions/metrics)에 아직 없어 보내지 않는다
-    if (!state.keepView && !state.dealSwitch && view !== 'policy') metrics.track(view === 'r' ? 'view_region' : view === 'a' ? 'view_apt' : view === 'watch' ? 'view_watch' : view === 'privacy' ? 'view_privacy' : 'view_overview', view === 'watch' ? { n: watch.list().length, ...j } : j);
+    // 정책 타임라인은 측정 행동 종류(infra/functions/metrics)에 아직 없어 보내지 않는다.
+    // 내 조건(재무 프로필)은 쓰는지 여부도 보내지 않는다 (로드맵 22번)
+    if (!state.keepView && !state.dealSwitch && view !== 'policy' && view !== 'me') metrics.track(view === 'r' ? 'view_region' : view === 'a' ? 'view_apt' : view === 'watch' ? 'view_watch' : view === 'privacy' ? 'view_privacy' : 'view_overview', view === 'watch' ? { n: watch.list().length, ...j } : j);
     state.dealSwitch = false;
     if (view === 'r') await viewRegion(parts[1], id);
     else if (view === 'a') await viewApt(parts[1], parts.slice(2).join('/'), id);
     else if (view === 'watch') await viewWatch(id);
     else if (view === 'privacy') viewPrivacy();
     else if (view === 'policy') await viewPolicy(parts[1], id);
+    else if (view === 'me') viewProfile();
     else await viewOverview(tab, id);
   } catch (e) {
     if (!isStale(id)) app.innerHTML = `<div class="card err">불러오지 못했습니다: ${esc(e.message)}</div>`;
@@ -2430,7 +2433,7 @@ async function viewApt(code, key, id) {
 }
 
 // ---------- 개인정보처리방침 ----------
-const PRIVACY_UPDATED = '2026-10-25';
+const PRIVACY_UPDATED = '2026-11-23';
 function viewPrivacy() {
   const on = metrics.available();
   app.innerHTML = `<article class="card prose">
@@ -2443,6 +2446,7 @@ function viewPrivacy() {
     <ul>
       <li>관심단지(★)와 관심 평형, 좋아요한 지역(♥) — 동기화 코드를 만들거나 연결하지 않으면 서버로 보내지 않아요(아래).</li>
       <li>테마, 화면 설정(매매/전세 보기, 첫 방문 안내를 닫았는지 포함), 관심단지별 마지막 확인 시점 — 서버로 보내지 않아요.</li>
+      <li>'내 조건' 화면에 넣은 재무 정보(현금·보증금·소득·기존 대출·주택 수·가구 정보·희망 대출 조건) — 서버로 보내지 않고, 측정·동기화 코드에도 넣지 않아요. 그 화면을 썼는지도 측정하지 않아요. '모두 지우기'나 브라우저 사이트 데이터 삭제로 지워요.</li>
       <li>무작위 기기 ID와 첫 방문 시각 — 측정에 써요(아래).</li>
     </ul>
 
@@ -2946,6 +2950,119 @@ function compareChart(items) {
     data(mode).forEach((d, i) => { chart.data.datasets[i].data = d; });
     chart.update('none');
   }));
+}
+
+// 내 재무 프로필 (로드맵 22번). 이 기기 브라우저에만 저장하고 서버·측정으로 보내지 않는다
+const PROFILE_KEY = 'homeTrend.profile';
+const profileStore = {
+  get() { try { return window.Profile.normalize(JSON.parse(localStorage.getItem(PROFILE_KEY))); } catch (_) { return window.Profile.normalize(null); } },
+  set(p) { try { localStorage.setItem(PROFILE_KEY, JSON.stringify({ ...window.Profile.normalize(p), updated: new Date().toISOString() })); return true; } catch (_) { return false; } },
+  clear() { try { localStorage.removeItem(PROFILE_KEY); } catch (_) { /* 저장 불가 */ } },
+};
+const pfMoney = (name, label, v, hint = '') => `<label class="pf-field"><span>${label}${hint ? ` ${tip(hint)}` : ''}</span>
+  <span class="pf-input"><input type="text" inputmode="numeric" name="${name}" value="${esc(v ?? '')}" placeholder="0" autocomplete="off"><em>만원</em></span>
+  <small class="muted" data-eok="${name}">${window.Profile.normalize({ cash: v }).cash ? fmtEok(window.Profile.normalize({ cash: v }).cash) : ''}</small></label>`;
+const pfCheck = (name, label, on, hint = '') => `<label class="pf-check"><input type="checkbox" name="${name}" ${on ? 'checked' : ''}> ${label}${hint ? ` ${tip(hint)}` : ''}</label>`;
+const pfSelect = (name, label, cur, opts) => `<label class="pf-field"><span>${label}</span><select name="${name}">${opts.map(([v, l]) => `<option value="${v}" ${String(v) === String(cur) ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select></label>`;
+const pfCount = (name, label, v) => pfSelect(name, label, v ?? '', [['', '선택'], ...[0, 1, 2, 3, 4].map((n) => [n, `${n}${n === 4 ? '+' : ''}`])]);
+
+function viewProfile() {
+  const Pf = window.Profile;
+  let p = profileStore.get();
+  let rows = p.loans.map((l) => ({ ...l }));
+  const loanRow = (l, i) => `<div class="pf-loan" data-i="${i}">
+    ${pfSelect(`loan.${i}.kind`, '종류', l.kind, Object.entries(Pf.LOAN_KINDS))}
+    ${pfMoney(`loan.${i}.balance`, '잔액', l.balance)}
+    <label class="pf-field"><span>금리</span><span class="pf-input"><input type="text" inputmode="decimal" name="loan.${i}.rate" value="${esc(l.rate ?? '')}" placeholder="0.0" autocomplete="off"><em>%</em></span></label>
+    ${pfMoney(`loan.${i}.monthly`, '월 상환액', l.monthly, '이자와 원금을 합쳐 매달 내는 돈이에요. 소득 대비 상환 비율에 써요.')}
+    <button type="button" class="btn pf-del" data-del="${i}" aria-label="이 대출 지우기">지우기</button>
+  </div>`;
+  const form = () => `
+    <section class="card pf-sec"><h2>자금</h2><div class="pf-grid">
+      ${pfMoney('cash', '바로 쓸 수 있는 현금', p.cash, '예금·적금·주식처럼 계약금·잔금에 쓸 수 있는 돈이에요.')}
+      ${pfMoney('deposit', '돌려받을 전세 보증금', p.deposit, '지금 사는 집의 보증금 중 잔금에 쓸 수 있는 금액이에요. 전세대출로 낸 부분은 빼고 넣거나, 아래 기존 대출에 함께 넣어 주세요.')}
+    </div></section>
+    <section class="card pf-sec"><h2>소득</h2><div class="pf-grid">
+      ${pfMoney('income', '본인 연소득 (세전)', p.income, '대출 심사에서 보는 소득이에요. 근로소득은 원천징수영수증의 총급여를 넣어요.')}
+      ${pfMoney('spouseIncome', '배우자 연소득 (세전)', p.spouseIncome)}
+    </div>${pfCheck('joint', '대출 심사에 배우자 소득 합산', p.joint, '합산하면 DSR 한도가 늘지만, 배우자의 대출도 기존 대출에 함께 넣어야 해요.')}</section>
+    <section class="card pf-sec"><div class="row"><h2>기존 대출</h2><span class="spacer"></span>${rows.length < Pf.LOANS_MAX ? '<button type="button" class="btn" id="pfAddLoan">대출 추가</button>' : ''}</div>
+      ${rows.length ? rows.map(loanRow).join('') : '<p class="muted" style="margin:0">없으면 비워 두세요.</p>'}</section>
+    <section class="card pf-sec"><h2>주택·가구</h2><div class="pf-grid">
+      ${pfCount('homes', '세대가 가진 주택 수', p.homes)}
+      ${pfCount('kids', '자녀 수', p.kids)}
+    </div><div class="pf-checks">
+      ${pfCheck('firstTime', '생애최초 주택 구입', p.firstTime, '세대원 모두 지금까지 주택을 가진 적이 없을 때예요. LTV와 취득세 감면이 달라져요.')}
+      ${pfCheck('live', '실거주 목적', p.live, '토지거래허가구역에서는 실거주 의무가 있고, 생애최초 대출은 전입 의무가 있어요.')}
+      ${pfCheck('married', '기혼', p.married)}
+      ${pfCheck('newborn', '최근 2년 안 출산', p.newborn, '신생아 특례 대출 자격을 판정할 때 써요.')}
+    </div></section>
+    <section class="card pf-sec"><h2>새 대출 희망 조건</h2><div class="pf-grid">
+      ${pfSelect('term', '대출 기간', p.term, Pf.TERMS.map((t) => [t, `${t}년`]))}
+      ${pfSelect('rateType', '금리 유형', p.rateType, Object.entries(Pf.RATE_TYPES))}
+    </div></section>`;
+  const summaryHtml = () => {
+    const s = Pf.summary(p);
+    const kpi = (label, value, hint = '') => `<div class="kpi"><div class="label">${label}</div><div class="value">${value}</div>${hint ? `<div class="hint">${hint}</div>` : ''}</div>`;
+    return `<div class="kpis">
+      ${kpi('쓸 수 있는 자금', s.funds == null ? '–' : fmtEok(s.funds), '현금 + 돌려받을 보증금')}
+      ${kpi('심사 소득 (연)', s.income == null ? '–' : fmtEok(s.income), p.joint ? '배우자 합산' : '본인')}
+      ${kpi('기존 대출 잔액', s.debt ? fmtEok(s.debt) : '없음', s.debtYear ? `연 상환 ${fmtEok(s.debtYear)}` : '')}
+      ${kpi('소득 대비 기존 상환', s.debtRatio == null ? '–' : fmtPct(s.debtRatio), '규제 DSR과 산정 방식이 다를 수 있어요')}
+    </div>
+    ${s.notes.length ? `<ul class="pf-notes">${s.notes.map((n) => `<li class="${n.level}">${esc(n.text)}</li>`).join('')}</ul>` : ''}
+    <p class="muted" style="font-size:12px;margin:8px 0 0">대출 가능액·필요 현금·월 부담 계산은 다음 단계(로드맵 23번)에서 이 값을 써서 보여 줘요.${p.updated ? ` · 마지막 저장 ${fmtDate(p.updated.slice(0, 10))}` : ''}</p>`;
+  };
+  app.innerHTML = `<div class="row"><h1>내 조건</h1><span class="spacer"></span><button type="button" class="btn" id="pfClear">모두 지우기</button></div>
+    <p class="pf-private">이 값은 <b>이 기기의 브라우저에만</b> 저장해요. 서버로 보내지 않고, 측정·공유 링크·동기화 코드에도 넣지 않아요. 다른 기기와 맞추는 기능은 비밀번호로 암호화하는 방식으로 따로 만들 예정이에요.</p>
+    <section class="card" id="pfSummary">${summaryHtml()}</section>
+    <form id="pfForm" autocomplete="off">${form()}</form>`;
+  const formEl = app.querySelector('#pfForm');
+  const summaryEl = app.querySelector('#pfSummary');
+  // 폼의 값 → 원래 입력(rows: 대출 줄은 비어 있어도 화면에 남긴다)과 정리한 프로필(p: 저장·계산용)
+  const read = () => {
+    const raw = { loans: rows.map(() => ({})) };
+    for (const el of formEl.elements) {
+      if (!el.name) continue;
+      const v = el.type === 'checkbox' ? el.checked : el.value;
+      const m = el.name.match(/^loan\.(\d+)\.(\w+)$/);
+      if (m) raw.loans[+m[1]][m[2]] = v;
+      else raw[el.name] = v;
+    }
+    return raw;
+  };
+  const save = (raw) => {
+    rows = raw.loans;
+    const ok = profileStore.set(raw);
+    p = ok ? profileStore.get() : { ...Pf.normalize(raw), updated: null };
+    summaryEl.innerHTML = summaryHtml() + (ok ? '' : '<p class="sync-warn">이 브라우저에 저장할 수 없어요(사생활 보호 모드 등). 이번 방문에만 계산에 써요.</p>');
+  };
+  formEl.addEventListener('input', (e) => {
+    const t = e.target;
+    if (t.inputMode === 'numeric') {
+      const n = Pf.normalize({ cash: t.value }).cash;
+      const out = formEl.querySelector(`[data-eok="${t.name}"]`);
+      if (out) out.textContent = n ? fmtEok(n) : '';
+    }
+    save(read());
+  });
+  formEl.addEventListener('change', () => save(read()));
+  formEl.addEventListener('submit', (e) => e.preventDefault());
+  formEl.addEventListener('click', (e) => {
+    const del = e.target.closest('[data-del]');
+    const add = e.target.closest('#pfAddLoan');
+    if (!del && !add) return;
+    const raw = read();
+    if (del) raw.loans.splice(+del.dataset.del, 1);
+    else raw.loans.push({ kind: 'credit' });
+    save(raw);
+    formEl.innerHTML = form();
+  });
+  app.querySelector('#pfClear').onclick = () => {
+    if (!confirm('이 기기에 저장한 내 조건을 모두 지울까요?')) return;
+    profileStore.clear();
+    viewProfile();
+  };
 }
 
 initDeal();
